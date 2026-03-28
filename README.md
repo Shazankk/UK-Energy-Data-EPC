@@ -19,28 +19,30 @@ We move through three distinct logical layers to ensure data integrity and query
 
 ```mermaid
 graph TD
-    subgraph "1. Ingestion (The Bronze Layer)"
-        A[Bulk CSVs 29.2M Rows] -->|bulk_load_epc.py| B[(DuckDB: raw.epc_domestic)]
+    subgraph "1. Ingestion (Bronze Layer)"
+        CSV[Bulk EPC CSVs 29.2M Rows] -->|bulk_load_epc.py| RAW[(DuckDB: raw.epc_domestic)]
     end
 
-    subgraph "2. Naturalization (The Silver Layer)"
-        B --> C[staging.stg_epc__domestic]
-        NoteC[Rename, Cast Types, Initial Cleansing]
+    subgraph "2. Naturalization (Silver Layer)"
+        RAW --> STG[staging.stg_epc__domestic]
+        NoteSTG[Clean Nulls, Cast Types, Standardize Age/Fuel]
     end
 
-    subgraph "3. Normalization (The Gold Layer)"
-        C --> D[marts.dim_properties]
-        C --> E[marts.dim_locations]
-        C --> F[marts.fct_certificates]
-        NoteD[Latest Known Characteristics]
-        NoteE[Unique Geographic Registry]
-        NoteF[Historical Assessment Fact Table]
+    subgraph "3. Normalization (Gold Layer)"
+        STG --> DIM_P[marts.dim_properties]
+        STG --> DIM_L[marts.dim_locations]
+        STG --> FCT_C[marts.fct_certificates]
+        
+        DIM_P --> FCT_AGG[marts.fct_property_aggregations]
+        DIM_L --> FCT_AGG
+        FCT_C --> FCT_AGG
     end
 
-    subgraph "4. Insights (Analysis)"
-        F --> G[eda_uk_energy.py]
-        G --> H[Interactive HTML Reports]
-        NoteG[Polars + Arrow Zero-Copy]
+    subgraph "4. Analytics & BI"
+        FCT_C --> V_REGIONAL[v_regional_performance]
+        FCT_C --> V_AGE[v_age_analysis]
+        FCT_AGG --> EDA[eda_uk_energy.py]
+        EDA --> HTML[Interactive Reports]
     end
 ```
 
