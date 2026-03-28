@@ -1,0 +1,31 @@
+# Envs and local artifacts
+dbt-env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
+*.pyc
+.env
+.ipynb_checkpoints/
+.DS_Store
+
+# dbt artifacts
+target/
+dbt_packages/
+logs/
+
+# Database files
+*.duckdb
+*.duckdb.wal
+.duckdb_history
+
+# Raw Data 
+all-domestic-certificates/
+output.csv
+
+# Reports
+reports/
+!reports/README.md

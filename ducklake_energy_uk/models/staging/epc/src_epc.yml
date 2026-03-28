@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: epc_raw
+    schema: raw
+    description: "Raw UK Energy EPC (Domestic) data loaded from bulk CSVs."
+    tables:
+      - name: epc_domestic
+        description: "The primary table containing all domestic EPC certificates."
+        columns:
+          - name: LMK_KEY
+            description: "Unique identifier for the certificate."
+            tests:
+              - unique
+              - not_null
