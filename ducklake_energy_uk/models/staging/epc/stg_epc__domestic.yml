@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: stg_epc__domestic
+    description: "Naturalized and Standardized EPC domestic data."
+    columns:
+      - name: certificate_key
+        description: "Surrogate key for the certificate."
+        tests:
+          - unique
+          - not_null
+
+      - name: uprn
+        description: "Unique Property Reference Number."
+        tests:
+          - not_null
+
+      - name: energy_rating_current
+        description: "The current energy rating (A-G)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+
+      - name: inspection_at
+        description: "The date of the inspection."
+        tests:
+          - not_null
+
+      - name: postcode
+        description: "Postcode of the property."
+        tests:
+          - not_null
