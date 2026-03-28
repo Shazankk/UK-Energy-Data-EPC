@@ -46,6 +46,16 @@ graph TD
 
 ---
 
+## 📚 Reference & Deep Dives
+
+For a detailed understanding of the engineering principles, industrial standards, and the step-by-step transformation lifecycle, refer to these masterclass documents:
+
+- 🎓 **[dbt Masterclass (DBT_WORKFLOW.md)](file:///Users/shazank/Projects/Backend/dbt_learn/DBT_WORKFLOW.md)**: Deep dive into Medallion Architecture, normalization, and dbt core concepts.
+- 📦 **[Raw Ingestion (bulk_load_epc.py)](file:///Users/shazank/Projects/Backend/dbt_learn/bulk_load_epc.py)**: The 30M row high-velocity loading script.
+- 📊 **[EDA Suite (eda_uk_energy.py)](file:///Users/shazank/Projects/Backend/dbt_learn/eda_uk_energy.py)**: Interactive Plotly/Polars analysis.
+
+---
+
 ## 🎓 Key Learning Moments
 
 ### 1. Why Normalization? (Flat to Star Schema)
@@ -129,10 +139,13 @@ pip install -r requirements.txt
 ---
 
 ## 🗺️ Path to Zero (The Roadmap)
+
 This project is part of a journey toward UK Net Zero.
-- **Current Status**: Normalization complete.
-- **Next Step**: Standardizing construction age bands and fuel types for high-accuracy energy modeling.
-- **Goal**: Auto-generated documentation and automated dbt tests for production-ready data quality.
+- [x] **Phase 1**: 29.2M Ingestion & Core Star Schema (Normalization).
+- [x] **Phase 2**: Standardized Construction Age Bands, Fuel Types, and Automated dbt Quality Tests (A-G constraints).
+- [x] **Documentation**: Created the Learning Masterclass and dbt visual lineage.
+- [ ] **Phase 3**: Advanced Energy Prediction Modeling and Carbon-Neutral Scenario Simulations.
+- [ ] **Deployment**: Visual Analytics Dashboard (Streamlit/Next.js) for regional energy performance comparison.
 
 ---
 
