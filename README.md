@@ -1,126 +1,140 @@
-# UK Energy Data Pipeline (EPC)
+# UK Energy Data Masterclass (EPC)
 
-🚀 **Analyzing 29.2 Million Energy Performance Certificates at Scale.**
+🚀 **A Modern Analytics Journey: From 29.2 Million Flat Records to a Normalized Star Schema.**
 
-This project implements an industry-standard **Medallion Architecture** to ingest, transform, and analyze the complete UK Domestic Energy Performance Certificate (EPC) dataset. Using **DuckDB** for lightning-fast processing and **dbt** for modular transformations, we move 30M records from raw CSVs to actionable insights in seconds.
-
----
-
-## 🧭 Purpose
-The UK Energy Performance Certificate (EPC) dataset is a massive repository of every energy assessment conducted in the country. 
-- **The Research Objective**: To identify the national distribution of energy efficiency, measure the "Potential vs. Current" efficiency gap, and quantify the total carbon reduction potential available through home improvements.
-- **The Scale**: ~29.2 million records $(\approx 50GB$ raw data $)$.
+This repository is more than a data pipeline—it’s a learning tool designed to demonstrate how to handle massive datasets (~50GB, 29.2M rows) using a local, high-performance stack: **DuckDB**, **dbt**, and **Polars**.
 
 ---
 
-## 🏗️ Architecture
+## 🧭 The Core Objective
+The UK Energy Performance Certificate (EPC) dataset is the primary record of building efficiency in Britain. 
+- **The Challenge**: How do you analyze 30 million records, deduplicate properties, and generate interactive reports on a single laptop in under 60 seconds?
+- **The Answer**: A **Medallion Architecture** using modern in-process OLAP tools.
 
-We follow a **Medallion Architecture** (Raw → Staging → Marts) using **DuckDB** as the unified storage and compute engine.
+---
+
+## 🏗️ Architecture & Learning Pathway
+
+We move through three distinct logical layers to ensure data integrity and query performance.
 
 ```mermaid
 graph TD
-    subgraph "1. Ingestion"
+    subgraph "1. Ingestion (The Bronze Layer)"
         A[Bulk CSVs 29.2M Rows] -->|bulk_load_epc.py| B[(DuckDB: raw.epc_domestic)]
     end
 
-    subgraph "2. Transformation (dbt)"
+    subgraph "2. Naturalization (The Silver Layer)"
         B --> C[staging.stg_epc__domestic]
+        NoteC[Rename, Cast Types, Initial Cleansing]
+    end
+
+    subgraph "3. Normalization (The Gold Layer)"
         C --> D[marts.dim_properties]
         C --> E[marts.dim_locations]
         C --> F[marts.fct_certificates]
+        NoteD[Latest Known Characteristics]
+        NoteE[Unique Geographic Registry]
+        NoteF[Historical Assessment Fact Table]
     end
 
-    subgraph "3. Analysis (EDA)"
+    subgraph "4. Insights (Analysis)"
         F --> G[eda_uk_energy.py]
-        D --> G
-        E --> G
         G --> H[Interactive HTML Reports]
-        G --> I[Standardized JSON Summary]
+        NoteG[Polars + Arrow Zero-Copy]
     end
 ```
 
 ---
 
-## 🛠️ Tech Stack
--   **Database**: [DuckDB](https://duckdb.org/) (In-process OLAP).
--   **Transformation**: [dbt-duckdb](https://github.com/jwills/dbt-duckdb) (Data Build Tool).
--   **Execution**: [Polars](https://pola.rs/) (High-performance DataFrame library).
--   **Visualization**: [Plotly](https://plotly.com/) & [Seaborn](https://seaborn.pydata.org/).
--   **Language**: Python 3.12+.
+## 🎓 Key Learning Moments
+
+### 1. Why Normalization? (Flat to Star Schema)
+Initially, the dataset is a single flat table with 100+ columns. Storing address details and property characteristics repeatedly for every 10 years of inspections is inefficient.
+
+#### 🎓 Teaching Moment: The "Latest Property" Pattern
+To create `dim_properties`, we must isolate the most recent state of a building. We use a **Window Function** to rank inspections per UPRN:
+
+```sql
+-- models/marts/energy/dim_properties.sql
+with ranked_properties as (
+    select
+        uprn, property_type, built_form, -- ... other fields
+        row_number() over (
+            partition by uprn 
+            order by inspection_at desc, lodgement_at desc
+        ) as property_rank
+    from stg_epc__domestic
+)
+select * from ranked_properties where property_rank = 1
+```
+
+- **`dim_locations`**: We deduplicate postcodes and counties to create a lightweight geographic registry.
+- **`fct_certificates`**: A thin fact table containing only metrics (CO2, costs) and keys, allowing for sub-second joins.
+
+### 2. The Power of "Surrogate Keys"
+We use `dbt_utils.generate_surrogate_key` (MD5 hashing) to create deterministic primary keys.
+
+```sql
+-- Example: Creating a unique location ID from a postcode
+{{ dbt_utils.generate_surrogate_key(['postcode']) }} as location_id
+```
+
+This allows us to link tables reliably without managing auto-incrementing integers across different load batches.
+
+### 3. The "Arrow Bridge" (DuckDB <-> Polars)
+One of the most powerful patterns in modern Python analytics:
+- **DuckDB** handles the heavy SQL lifting and disk I/O.
+- **Apache Arrow** acts as the cross-language memory format.
+- **Polars** receives the data with **zero-copy overhead**, allowing it to process millions of rows in milliseconds using its multi-threaded execution engine.
 
 ---
 
-## ⚙️ Installation & Setup
+## ⚙️ Technical Deep Dive
 
-### 1. Prerequisites
-- **Git** (Version control).
-- **Python 3.12+**.
-- **Homebrew** (Optional, for Mac installation).
+### I. Ingestion Logic (`bulk_load_epc.py`)
+Handling 30M rows requires speed. We use DuckDB's `read_csv_auto` which parallelizes CSV sniffing and loading across all CPU cores.
+> **Tip**: We load as `VARCHAR` first. Why? Because manual type-casting mid-load is the #1 cause of ingestion failure on messy real-world data. We "naturalize" types safely in the staging layer.
 
-### 2. Environment Setup
+### II. The dbt Transformation Workflow
+Our dbt project (`ducklake_energy_uk`) manages complexity:
+- **Lineage**: Every table is connected via `ref()` functions.
+- **Modularity**: Logic is broken into small, testable blocks.
+- **Materialization**: Large tables are materialized as `table`, while analytical summaries are kept as `view` for flexibility.
+
+### III. High-Performance EDA (`eda_uk_energy.py`)
+Using **Lazy Polars**, we scan the database without loading it all into RAM.
+```python
+# The Secret Sauce
+df = conn.query("SELECT * FROM fct_certificates").pl() # Returns a Polars DataFrame via Arrow
+```
+
+---
+
+## 🏁 Installation & Learning Guide
+
+### 1. Setup Your Lab
 ```bash
-# Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/Shazankk/UK-Energy-Data-EPC-.git
 cd dbt_learn
-
-# Create a virtual environment
 python3 -m venv dbt-env
 source dbt-env/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Data Ingestion
-1. Place your bulk EPC data in the folder `./all-domestic-certificates/`.
-2. Run the bulk loader:
-```bash
-python bulk_load_epc.py
-```
-*This will create `ducklake_energy_uk/dev.duckdb` and load 29.2M rows (~10s).*
-
-### 4. dbt Transformations
-```bash
-cd ducklake_energy_uk
-dbt deps        # Install dbt-utils
-dbt run         # Build Staging, Marts, and Analytical Views
-```
-
-### 5. Running the EDA Suite
-```bash
-cd ..
-python eda_uk_energy.py
-```
-*Interactive charts and summaries will be generated in the `reports/` folder.*
+### 2. Execute the Pipeline
+1.  **Ingest**: `python bulk_load_epc.py` (Watch 29.2M rows fly into DuckDB).
+2.  **Transform**: `cd ducklake_energy_uk && dbt deps && dbt run` (Build the Star Schema).
+3.  **Analyze**: `cd .. && python eda_uk_energy.py` (Generate interactive reports).
 
 ---
 
-## 📖 Component Reference
-
-### `bulk_load_epc.py`
-Uses DuckDB's native `read_csv_auto` with globbing to ingest thousands of CSV files in a single command. It types everything as `VARCHAR` first to ensure 100% ingestion success.
-
-### `ducklake_energy_uk/` (dbt Project)
-- **Staging**: Cleans, renames, and types the raw data.
-- **Normalized Marts**: Splits the flat data into `dim_properties` (latest known state), `dim_locations` (unique postcodes), and `fct_certificates` (fact table).
-- **Analytics Views**: Specialized summaries for regional leaderboards and construction era trends.
-
-### `eda_uk_energy.py`
-Leverages the **Arrow Bridge** between DuckDB and Polars for zero-copy memory transfer. Generates interactive Plotly visualizations for national energy distributions.
-
----
-
-## 🏁 Future Roadmap (The Next Steps)
-
-- **[ ] Standardize Construction Age Bands**: Map fragmented strings into consistent decades.
-- **[ ] Normalize Fuel Types**: Consolidate fuel naming (e.g., Gas, Main Gas).
-- **[ ] Add dbt Tests**: 
-    - `not-null` on UPRN and Certificate ID.
-    - `accepted-values` (A-G) on EPC bands.
-- **[ ] Documentation**: Run `dbt docs generate` for full lineage visualization.
-- **[ ] CI/CD**: Push to GitHub and set up Actions for data validation.
+## 🗺️ Path to Zero (The Roadmap)
+This project is part of a journey toward UK Net Zero.
+- **Current Status**: Normalization complete.
+- **Next Step**: Standardizing construction age bands and fuel types for high-accuracy energy modeling.
+- **Goal**: Auto-generated documentation and automated dbt tests for production-ready data quality.
 
 ---
 
 ## 🛡️ License
-MIT License.
+Distributed under the MIT License. See `LICENSE` for more information.
