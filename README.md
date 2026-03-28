@@ -114,7 +114,7 @@ df = conn.query("SELECT * FROM fct_certificates").pl() # Returns a Polars DataFr
 
 ### 1. Setup Your Lab
 ```bash
-git clone https://github.com/Shazankk/UK-Energy-Data-EPC-.git
+git clone https://github.com/Shazankk/UK-Energy-Data-EPC.git
 cd dbt_learn
 python3 -m venv dbt-env
 source dbt-env/bin/activate
