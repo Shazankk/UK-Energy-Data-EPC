@@ -58,6 +58,32 @@ For a detailed understanding of the engineering principles, industrial standards
 
 ---
 
+## 🧱 Architecture Selection & Rationale
+
+Why did we choose this specific stack? To build a **production-grade warehouse on a laptop**. Here is the breakdown of our "Modern Data Stack (Local Edition)":
+
+### 🦆 DuckDB: The Storage & SQL Engine
+*   **The Role**: In-process OLAP (Online Analytical Processing) database.
+*   **The "Why"**: Traditional databases (Postgres/MySQL) struggle with 30M row aggregations on limited RAM. DuckDB uses **vectorized query execution** and a columnar storage format, allowing it to perform sub-second analytical queries on 29.2M rows directly from disk. It's essentially "SQLite for Analytics."
+
+### 🐻 Polars: The Processing Engine
+*   **The Role**: Lightning-fast DataFrame library (the successor to Pandas).
+*   **The "Why"**: While DuckDB is great for SQL, Polars is superior for complex data manipulations and machine learning preparation. Written in **Rust**, Polars is multi-threaded by design and incredibly memory-efficient. It allows us to perform EDA on the entire dataset without ever hitting a "Memory Error."
+
+### 🏹 Apache Arrow: The Universal Bridge
+*   **The Role**: In-memory columnar data format.
+*   **The "Why"**: This is the "secret sauce." Transitioning data from a database (DuckDB) to a DataFrame (Polars) usually involves slow serialization. Because both tools support **Apache Arrow**, data is passed via **zero-copy**. The data stays in the same place in memory, and both tools just look at it. This makes the "DuckDB -> Polars" transition instantaneous.
+
+### 🛠️ dbt (Data Build Tool): The Orchestrator
+*   **The Role**: Transformation management and Data Modeling.
+*   **The "Why"**: dbt allows us to treat data like software. We get **version control**, **automated testing**, and **lineage tracking**. Without dbt, 100+ lines of SQL transformation would be a "black box"; with dbt, it's a modular, documented pipeline.
+
+### 📈 Plotly & Seaborn: The Visual Layer
+*   **The Role**: Static and Interactive data visualization.
+*   **The "Why"**: Plotly provides the interactive "drill-down" capability (seeing specific UPRNs in a cluster), while Seaborn provides the statistical rigor for distribution plots and efficiency correlations.
+
+---
+
 ## 🎓 Key Learning Moments
 
 ### 1. Why Normalization? (Flat to Star Schema)
