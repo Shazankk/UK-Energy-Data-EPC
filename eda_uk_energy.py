@@ -465,10 +465,58 @@ def build_postcode_area_heatmap(con) -> go.Figure:
     return fig
 
 
+def _rdp(points: list, tol: float) -> list:
+    """Ramer-Douglas-Peucker polyline simplification — pure Python, no dependencies."""
+    if len(points) < 3:
+        return points
+    x1, y1 = points[0]
+    x2, y2 = points[-1]
+    dx, dy = x2 - x1, y2 - y1
+    norm = (dx * dx + dy * dy) ** 0.5
+    max_dist, max_idx = 0.0, 0
+    for i, (px, py) in enumerate(points[1:-1], 1):
+        dist = abs(dy * px - dx * py + x2 * y1 - y2 * x1) / norm if norm > 0 \
+               else ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+        if dist > max_dist:
+            max_dist, max_idx = dist, i
+    if max_dist > tol:
+        return _rdp(points[:max_idx + 1], tol)[:-1] + _rdp(points[max_idx:], tol)
+    return [points[0], points[-1]]
+
+
+def _simplify_geojson(gj: dict, tol: float = 0.005) -> dict:
+    """
+    Simplify all polygon rings in a GeoJSON FeatureCollection using RDP.
+    tol=0.005 degrees ≈ 550 m — sufficient for a national UK district map.
+    Reduces the martinjc LAD GeoJSON from 18 MB → ~2.6 MB.
+    """
+    def _ring(r):
+        s = _rdp(r, tol)
+        return s if len(s) >= 4 else r
+
+    feats = []
+    for feat in gj['features']:
+        geom = feat.get('geometry') or {}
+        gt   = geom.get('type', '')
+        if gt == 'Polygon':
+            new_geom = {'type': 'Polygon',
+                        'coordinates': [_ring(r) for r in geom['coordinates']]}
+        elif gt == 'MultiPolygon':
+            new_geom = {'type': 'MultiPolygon',
+                        'coordinates': [[_ring(r) for r in poly]
+                                        for poly in geom['coordinates']]}
+        else:
+            new_geom = geom
+        feats.append({'type': 'Feature', 'id': feat.get('id'),
+                      'properties': feat['properties'], 'geometry': new_geom})
+    return {'type': 'FeatureCollection', 'features': feats}
+
+
 def build_choropleth_map(con) -> go.Figure:
     """
     Choropleth: UK Local Authority Districts coloured by average SAP score.
-    Boundaries fetched from the ONS Open Geography Portal (ArcGIS REST).
+    Boundaries fetched from martinjc/UK-GeoJSON and simplified with RDP (18 MB → 2.6 MB)
+    so the chart embeds cleanly in the static HTML dashboard.
     Hover shows retrofit priority score, property count, and CO₂ saving potential.
     """
     df = _to_pd(con.execute("""
@@ -491,7 +539,7 @@ def build_choropleth_map(con) -> go.Figure:
     try:
         resp = requests.get(GEOJSON_URL, timeout=30)
         resp.raise_for_status()
-        geojson = resp.json()
+        raw_geojson = resp.json()
     except Exception as exc:
         print(f"    ⚠️  choropleth skipped — could not fetch boundaries ({exc})")
         fig = go.Figure()
@@ -500,6 +548,9 @@ def build_choropleth_map(con) -> go.Figure:
             title=dict(text="Geographic map unavailable — boundary fetch failed", font=dict(size=18)),
         )
         return fig
+
+    # Simplify from ~18 MB → ~2.6 MB so the HTML embeds without overflowing
+    geojson = _simplify_geojson(raw_geojson, tol=0.005)
 
     # martinjc GeoJSON uses LAD13NM for name, LAD13CD for code
     name_to_code = {
@@ -534,8 +585,17 @@ def build_choropleth_map(con) -> go.Figure:
             'lad_code': False,
         },
     )
-    # Fit the viewport tightly around the UK districts — hides the world base map
-    fig.update_geos(fitbounds='locations', visible=False)
+    # Fit viewport to UK; style background to match dark theme
+    fig.update_geos(
+        fitbounds='locations',
+        visible=True,
+        showland=True,     landcolor='#1e2330',
+        showocean=True,    oceancolor='#0d1117',
+        showlakes=False,
+        showcoastlines=True, coastlinecolor='#444',
+        showframe=False,
+        showsubunits=False,
+    )
     fig.update_coloraxes(
         colorbar_title='Avg SAP',
         colorbar_tickvals=[45, 55, 65, 75],
