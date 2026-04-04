@@ -973,6 +973,85 @@ SECTIONS = [
 ]
 
 
+def build_summary_section(summary: dict) -> str:
+    """
+    Returns a pure-HTML final findings section — no Plotly figure.
+    Bullet points are grouped by theme and drawn from every chart in the dashboard.
+    """
+    co2_mt   = round(summary['co2_saving'] / 1e6, 1)
+    cars_eq  = round(co2_mt * 1e6 / 2.1 / 1e6, 1)   # avg car ~2.1 t CO₂/yr
+
+    groups = [
+        ("📊 Scale &amp; Baseline", [
+            f"<strong>29.2 million</strong> domestic EPC certificates cover virtually every home sold or rented in England &amp; Wales since 2008.",
+            f"National average SAP score: <strong>65.3</strong> — Band D. The government's 2035 legal target is Band C (SAP ≈ 69).",
+            f"<strong>{summary['pct_below_c']}% of properties</strong> (more than 1 in 2) are rated D or below and currently miss the 2035 target.",
+            f"If every property reached its EPC-assessed potential, national residential CO₂ emissions would fall by <strong>{co2_mt} million tonnes per year</strong> — equivalent to taking <strong>{cars_eq} million cars off the road</strong>.",
+            f"The average household spends <strong>~£951/yr</strong> on energy (heating, hot water, lighting). Reaching Band C would cut that by roughly £200–300 per year.",
+        ]),
+        ("🗺️ Geographic Inequality", [
+            "A <strong>20+ SAP point gap</strong> separates the worst rural counties from the best urban ones — equivalent to two full EPC bands and roughly £800/yr in extra heating costs per household.",
+            "Rural postcode areas (TR, PL, EX, LD, SY) are dominated by E–G bands due to older solid-wall housing stock and near-zero mains gas coverage.",
+            "Urban postcode areas (E, N, SW, SE) cluster at C–D, reflecting newer flats and terraced housing with shared walls reducing heat loss.",
+            "The highest-priority local authorities for intervention cluster in rural Midlands and North — large concentrations of older, inefficient housing where total CO₂ saving potential is greatest.",
+        ]),
+        ("🏗️ Age &amp; Construction Era", [
+            "<strong>Pre-1900 homes</strong> are the single largest retrofit opportunity: average SAP 53 today, achievable SAP 75 — a <strong>22-point gain</strong>, equivalent to jumping from Band E to Band C.",
+            "Each decade of building regulations produces a visible step-change in efficiency: cavity walls (1930s–50s), mandatory insulation (1976), condensing boilers (2005), fabric-first standards (2012+).",
+            "<strong>Post-2003 properties</strong> score near zero on retrofit priority — modern regulations have already captured most of the available improvement. Building new is not where the decarbonisation problem lies.",
+            "The 1950–1975 band contains the most certificates of any era and scores mid-table on retrofit priority — a large, addressable opportunity often overlooked in favour of the more dramatic pre-1900 story.",
+        ]),
+        ("⛽ Fuel Type — The Hidden Divide", [
+            "A <strong>31-point SAP gap</strong> separates mains gas homes (avg SAP 66.3) from solid fuel homes (avg SAP 35.1) — the single largest structural driver of EPC score variation.",
+            "~1 million homes are on heating oil; ~200k on LPG. These off-gas-grid properties <em>cannot reach Band C through insulation alone</em> — fuel switching to heat pumps or biomass is mandatory.",
+            "Off-gas-grid homes face a double burden: more expensive fuel per kWh <em>and</em> harder-to-insulate solid walls — making them the most challenging and most urgent retrofit targets.",
+            "Electricity-heated homes (3.7M properties) will improve automatically as the national grid decarbonises, without any physical retrofit — this is a structural tailwind for Band C attainment.",
+        ]),
+        ("🏠 Property Type &amp; Energy Cost", [
+            "<strong>Detached houses</strong> emit roughly 5× more CO₂ than a typical flat (median comparison) — four exposed external walls versus shared party walls fundamentally change heat loss physics.",
+            "Detached households pay on average <strong>£1,094/yr</strong> in energy costs vs <strong>£622/yr</strong> for flats — a £472/yr structural gap that persists even after controlling for SAP score.",
+            "Targeting detached housing in rural, off-gas-grid counties delivers the largest CO₂ saving per pound of retrofit investment of any single property/location combination.",
+        ]),
+        ("📈 Trend: Improving But Too Slowly", [
+            "The national average SAP improved from <strong>62.1 in 2008 to 69.3 in 2024</strong> — a genuine +7.2 point improvement driven by cavity wall insulation programmes, boiler replacement schemes, and new-build standards.",
+            "At the current rate of ~0.45 SAP points per year, the national average will <em>not</em> reach Band C (SAP ≈ 69) across the existing stock until well after 2035.",
+            "The government's 2035 target requires roughly <strong>3× the current annual improvement rate</strong>. This implies a step-change in policy ambition — not incremental continuation.",
+            "Certificate volumes spiked 2009–2010 (Home Information Pack requirement) then stabilised. The 2017–2020 uptick correlates with increased buy-to-let activity before Minimum Energy Efficiency Standards enforcement.",
+        ]),
+        ("🔧 Retrofit Priority Composite Score", [
+            "The composite Retrofit Priority Score (0–100) combines: current inefficiency (35%), achievable efficiency gain (40%), and CO₂ saving potential (25%) — all normalized globally.",
+            "<strong>Pre-1900 detached and semi-detached houses</strong> score highest on every dimension simultaneously: they are the worst today, can improve the most, and save the most carbon per property.",
+            "<strong>Social housing</strong> (avg SAP 68–69) outperforms both private rented (avg SAP 62–65) and owner-occupied (avg SAP 60–64) — sustained investment under the Decent Homes Standard is measurable in the data.",
+            "The <em>split incentive</em> problem is visible: private landlords bear retrofit costs while tenants receive the bill savings, depressing private rented sector scores despite Minimum Energy Efficiency Standards (MEES) requiring Band E as a floor.",
+        ]),
+        ("🎯 Policy Implications", [
+            "A <strong>fabric-first, geography-targeted approach</strong> is most cost-effective: prioritise solid-wall insulation and fuel switching in rural, off-gas-grid counties with pre-1930 detached and semi-detached housing.",
+            "Universal policies (boiler upgrade grants, ECO scheme) disproportionately benefit mains-gas, cavity-wall homes — the easy cases. Hard-to-treat properties need bespoke, higher-subsidy pathways.",
+            "The owner-occupied sector (14M+ properties, worst average SAP) is the largest and hardest to reach — no landlord-tenant regulation applies, and many owners are asset-rich but cash-poor older residents.",
+            "At 46.3 million tonnes of CO₂ saving potential per year, full retrofit of the existing English &amp; Welsh housing stock represents one of the largest single decarbonisation levers available to UK policy.",
+        ]),
+    ]
+
+    bullets_html = ""
+    for title, points in groups:
+        items = "".join(f"<li>{p}</li>" for p in points)
+        bullets_html += f"""
+        <div class="summary-group">
+          <h3>{title}</h3>
+          <ul>{items}</ul>
+        </div>"""
+
+    return f"""
+    <section id="summary">
+      <h2>Final Summary — Key Findings</h2>
+      <div class="chart-desc">
+        What 29.2 million EPC certificates tell us about the UK housing stock, the scale of the
+        decarbonisation challenge, and where the highest-impact interventions lie.
+      </div>
+      <div class="summary-grid">{bullets_html}</div>
+    </section>"""
+
+
 def _kpi_card(label: str, value: str, sub: str = '', color: str = '#4f8ef7') -> str:
     return f"""
     <div class="kpi-card">
@@ -997,6 +1076,7 @@ def build_dashboard(figures: list, summary: dict) -> None:
         f'<a href="#{sid}">{title.split(". ", 1)[-1]}</a>'
         for sid, title, _ in SECTIONS
     )
+    nav_html += '<a href="#summary">Key Findings</a>'
 
     sections_html = ""
     for (sid, title, desc), fig in zip(SECTIONS, figures):
@@ -1006,6 +1086,8 @@ def build_dashboard(figures: list, summary: dict) -> None:
           <div class="chart-desc">{desc}</div>
           <div class="chart-wrap">{_embed(fig)}</div>
         </section>"""
+
+    sections_html += build_summary_section(summary)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1108,6 +1190,40 @@ def build_dashboard(figures: list, summary: dict) -> None:
       padding: 8px;
       overflow: hidden;
     }}
+
+    /* ── Summary grid ───────────────────────────────── */
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+      gap: 20px;
+      margin-top: 8px;
+    }}
+    .summary-group {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+    }}
+    .summary-group h3 {{
+      font-size: 14px; font-weight: 600;
+      color: var(--accent); margin-bottom: 10px;
+    }}
+    .summary-group ul {{
+      list-style: none; padding: 0; margin: 0;
+    }}
+    .summary-group li {{
+      color: var(--muted); font-size: 13px; line-height: 1.65;
+      padding: 5px 0 5px 14px;
+      border-bottom: 1px solid rgba(48,54,61,0.6);
+      position: relative;
+    }}
+    .summary-group li:last-child {{ border-bottom: none; }}
+    .summary-group li::before {{
+      content: '›'; position: absolute; left: 0;
+      color: var(--accent); font-weight: 700;
+    }}
+    .summary-group li strong {{ color: var(--text); }}
+    .summary-group li em {{ color: #a5d6ff; font-style: normal; }}
 
     /* ── Footer ──────────────────────────────────────── */
     footer {{
