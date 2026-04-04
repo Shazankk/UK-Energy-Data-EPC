@@ -4,7 +4,7 @@
 
 This repository is both a working data pipeline and a learning resource. It demonstrates how to handle a massive real-world dataset (~50GB, 29.2M rows) using a local, high-performance stack — **DuckDB**, **dbt**, and **Polars** — on a single laptop in under 60 seconds.
 
-**[Live Dashboard →](https://shazankk.github.io/UK-Energy-Data-EPC-/)** — Interactive EPC analytics: rating distributions, retrofit priority scores, local authority treemap, postcode heatmaps.
+**[Live Dashboard →](https://shazankk.github.io/UK-Energy-Data-EPC/)** — 12-section interactive EPC analytics: rating distributions, county efficiency, retrofit priority matrix, geographic choropleth map, fuel type impact, annual EPC trend, energy cost breakdown, and more.
 
 ---
 
@@ -131,10 +131,15 @@ df = conn.query("SELECT * FROM fct_certificates").pl()
 
 ---
 
-### Plotly & Seaborn — The Visual Layer
+### Plotly — The Visual Layer
 
-- **Plotly**: Interactive charts with drill-down capability — hover over a data point to see the specific UPRN, address, and certificate details.
-- **Seaborn**: Statistical distribution plots for efficiency correlations, age-band breakdowns, and regional comparisons.
+**Plotly** powers all interactive visualisations in the single-file dashboard (`reports/dashboard.html`). Every chart embeds as a `<div>` snippet with Plotly.js loaded once from CDN — the result is a self-contained HTML file that works in any browser with no server.
+
+Charts are deliberately chosen to avoid overplotting on 29M-row datasets:
+- **Box plots** for CO₂ distributions (median + IQR, no scatter ink-blot)
+- **2D density contours** for efficiency vs CO₂ (mass of data as "hills")
+- **Heatmaps** for retrofit priority matrix and postcode EPC bands
+- **`go.Scattergeo` filled polygons** for the geographic map (bypasses GeoJSON matching, works offline)
 
 ---
 
@@ -300,12 +305,35 @@ dbt docs serve      # Opens browser at localhost:8080 with visual DAG
 
 ---
 
+## Dashboard Sections
+
+The live dashboard (`reports/dashboard.html`) contains 12 analytical sections, all generated from the DuckDB star schema:
+
+| # | Section | Chart Type | Key Insight |
+|---|---|---|---|
+| KPI | Headline figures | Cards | Total properties, avg SAP, CO₂ saving potential, % below Band C |
+| 1 | National EPC Rating Distribution | Bar | 58%+ of properties rated D or below — miss the 2035 Band C target |
+| 2 | County Efficiency: Best vs Worst 20 | Horizontal bar | Rural counties average SAP 52; urban counties SAP 72+ |
+| 3 | Efficiency by Construction Decade | Grouped bar | Pre-1900 homes: SAP 53 today → SAP 75 potential (+22 pts) |
+| 4 | CO₂ by Property Type | Box plots | Detached houses emit 5× more CO₂ than typical flats |
+| 5 | Efficiency vs CO₂ Density | 2D contour | D/E band cluster at 60–70 SAP / 2–3 t CO₂ dominates |
+| 6 | Retrofit Priority Matrix | Heatmap | Pre-1900 detached & semi-detached score highest priority |
+| 7 | Local Authority Treemap | Treemap | County → LA: box size = CO₂ saving potential, colour = efficiency |
+| 8 | Postcode Area Heatmap | Matrix heatmap | Rural areas (TR, PL, EX) skew E–G; urban (E, N, SW) skew C–D |
+| 9 | Geographic EPC Map | Scattergeo polygons | Choropleth of all 362 UK LADs by avg SAP score |
+| 10 | Fuel Type Impact | Grouped bar | Solid fuel: SAP 35 vs Mains Gas: SAP 66 — a 31-point structural gap |
+| 11 | EPC Score Trend 2008–2024 | Dual-axis line | +7.2 SAP points in 16 yrs — 3× faster improvement needed for 2035 |
+| 12 | Annual Energy Cost by Property Type | Stacked bar | Detached houses spend 2.6× more on heating than flats |
+
+---
+
 ## Roadmap
 
 - [x] **Phase 1**: 29.2M row ingestion and core star schema (dim/fct normalization)
 - [x] **Phase 2**: Standardized construction age bands, fuel types, and automated dbt quality tests
 - [x] **Phase 3**: Retrofit Priority Score model (`v_retrofit_priority`) — composite 0–100 score per property type × age band × local authority
-- [x] **Dashboard**: Single-file interactive analytics dashboard deployed via GitHub Pages
+- [x] **Dashboard**: 12-section single-file interactive analytics dashboard deployed via GitHub Pages
+- [x] **Geographic Analysis**: LAD-level choropleth map, fuel type impact, annual EPC trend, cost breakdown
 - [x] **Documentation**: Learning masterclass and dbt visual lineage
 - [ ] **Phase 4**: Advanced energy prediction modeling and carbon-neutral scenario simulations
 - [ ] **Deployment**: Full BI dashboard (Streamlit/Next.js) with live filtering

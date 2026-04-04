@@ -499,10 +499,10 @@ These views pre-join the star schema tables for specific analytical questions. T
 
 | View | Joins | Answers |
 |---|---|---|
-| `v_regional_energy_performance` | `fct_certificates` + `dim_locations` | Average efficiency and CO2 by county, town, local authority |
+| `v_regional_energy_performance` | `fct_certificates` + `dim_locations` | Average efficiency and CO₂ by county, town, local authority |
 | `v_construction_age_analysis` | `fct_certificates` + `dim_properties` | Average efficiency and consumption by decade and property type |
 | `v_property_efficiency_gaps` | `fct_certificates` + `dim_properties` | Properties where `efficiency_gap > 30` — highest upgrade potential |
-| `v_retrofit_priority` | `fct_certificates` + `dim_properties` + `dim_locations` | Composite retrofit priority score 0-100 per property type × age band × local authority |
+| `v_retrofit_priority` | `fct_certificates` + `dim_properties` + `dim_locations` | Composite retrofit priority score 0–100 per property type × age band × local authority |
 
 #### `v_retrofit_priority` — The Composite Score
 
@@ -537,6 +537,58 @@ join dim_properties p on f.property_id = p.property_id
 where efficiency_gap > 30   -- Only high-impact properties
 order by efficiency_gap desc
 ```
+
+---
+
+## Part 4b: The EDA Dashboard (`eda_uk_energy.py`)
+
+`eda_uk_energy.py` reads from the star schema and produces a single interactive HTML file (`reports/dashboard.html`). It is organized as 12 chart builders, each returning a `go.Figure`, which are assembled into one self-contained page with Plotly.js loaded once from CDN.
+
+### Why a single HTML file?
+
+Each chart is embedded as a `<div>` snippet via `fig.to_html(full_html=False, include_plotlyjs=False)`. This means you can open the dashboard in any browser — no server, no network required — and share it as a single attachment.
+
+### Design choices for large datasets
+
+With 29.2M rows, naive scatter plots produce an unreadable ink-blot. The dashboard uses:
+
+| Problem | Solution |
+|---|---|
+| 100k+ overlapping points | Box plots (CO₂ by property type) and 2D density contours (efficiency vs CO₂) |
+| Large GeoJSON (18 MB) embedded in HTML | Ramer-Douglas-Peucker simplification reduces to 2.6 MB (86% reduction) before embedding |
+| Choropleth ID-matching failures in Plotly 6 | Districts drawn as individual filled `go.Scattergeo` polygons with explicit coordinates |
+| Column names from raw CSVs are UPPERCASE | `_pl()` helper lowercases all DuckDB result columns before handing to Polars |
+
+### Dashboard sections
+
+| Section | Data source | Key finding |
+|---|---|---|
+| 1. Rating Distribution | `fct_certificates` | 58%+ rated D or below — majority miss the 2035 Band C target |
+| 2. County Efficiency | `v_regional_energy_performance` | 20-point SAP gap between worst rural and best urban counties |
+| 3. Efficiency by Decade | `fct_certificates` + `dim_properties` | Pre-1900 homes: SAP 53 → SAP 75 potential (+22 pts, largest gap of any era) |
+| 4. CO₂ by Property Type | `fct_certificates` + `dim_properties` | Detached houses emit 5× more CO₂ than a typical flat |
+| 5. Efficiency vs CO₂ Density | `fct_certificates` + `dim_properties` | D/E band (60–70 SAP / 2–3 t CO₂) is the densest cluster in the dataset |
+| 6. Retrofit Priority Matrix | `v_retrofit_priority` | Pre-1900 detached and semi-detached homes score highest priority |
+| 7. Local Authority Treemap | `v_retrofit_priority` | Box size = CO₂ saving potential, colour = avg SAP — largest red boxes = biggest wins |
+| 8. Postcode Area Heatmap | `fct_certificates` + `dim_locations` | Rural areas (TR, PL, EX) skew E–G; urban (E, N, SW) skew C–D |
+| 9. Geographic EPC Map | `v_retrofit_priority` + martinjc GeoJSON | 362 UK local authority districts coloured by avg SAP score |
+| 10. Fuel Type Impact | `stg_epc__domestic` | 31-point SAP gap between mains gas (66.3) and solid fuel (35.1) |
+| 11. EPC Score Trend 2008–2024 | `fct_certificates` | +7.2 SAP points in 16 years — improvement rate needs to triple for 2035 target |
+| 12. Annual Energy Cost | `fct_certificates` + `dim_properties` | Detached houses spend £1,094/yr; flats spend £622/yr — a £472 structural gap |
+
+### The Retrofit Priority Score formula
+
+`v_retrofit_priority` calculates a composite score per `property_type × construction_age_band × county × local_authority`:
+
+```
+retrofit_priority_score =
+    0.35 × (current_inefficiency / global_max_inefficiency)    -- how bad is it today?
+  + 0.40 × (efficiency_gap / global_max_gap)                   -- how much can it improve?
+  + 0.25 × (co2_saving / global_max_co2_saving)                -- what is the climate impact?
+  × 100
+```
+
+All three components are normalized against the global maximum across all 29.2M certificates, ensuring the score is comparable across any property type or location.
 
 ---
 
