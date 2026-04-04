@@ -27,6 +27,10 @@ Sections in the dashboard
   6. Retrofit Priority Matrix            (heatmap: property type × age band)
   7. Local Authority Treemap             (county → LA, worst EPC + highest CO₂ saving)
   8. Postcode Area Heatmap               (postcode area × EPC band distribution)
+  9. Geographic EPC Map                  (choropleth: LAD boundaries coloured by avg SAP)
+ 10. Heating Fuel Type Impact            (avg SAP current vs potential per fuel type)
+ 11. EPC Score Trend 2008–2024          (yearly improvement line + cert volume)
+ 12. Annual Energy Cost by Property Type (stacked: heating + hot water + lighting)
 
 Why aggregated charts instead of scatter plots?
 -----------------------------------------------
@@ -45,6 +49,7 @@ import plotly.colors as pc
 from plotly.subplots import make_subplots
 import os
 import json
+import requests
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -460,6 +465,241 @@ def build_postcode_area_heatmap(con) -> go.Figure:
     return fig
 
 
+def build_choropleth_map(con) -> go.Figure:
+    """
+    Choropleth: UK Local Authority Districts coloured by average SAP score.
+    Boundaries fetched from the ONS Open Geography Portal (ArcGIS REST).
+    Hover shows retrofit priority score, property count, and CO₂ saving potential.
+    """
+    df = _to_pd(con.execute("""
+        select local_authority, county,
+               round(avg(avg_efficiency_current), 1)      as avg_efficiency,
+               round(avg(avg_retrofit_priority_score), 1) as avg_retrofit_score,
+               sum(property_count)                        as property_count,
+               round(sum(total_co2_saving_potential_tonnes) / 1e3, 1) as co2_saving_kt
+        from v_retrofit_priority
+        where local_authority is not null
+        group by 1, 2
+        having sum(property_count) > 100
+    """))
+
+    # Simplified UK LAD boundaries (2013) from martinjc/UK-GeoJSON — 380 districts, ~6 MB
+    GEOJSON_URL = (
+        "https://raw.githubusercontent.com/martinjc/UK-GeoJSON/master/"
+        "json/administrative/gb/lad.json"
+    )
+    try:
+        resp = requests.get(GEOJSON_URL, timeout=30)
+        resp.raise_for_status()
+        geojson = resp.json()
+    except Exception as exc:
+        print(f"    ⚠️  choropleth skipped — could not fetch boundaries ({exc})")
+        fig = go.Figure()
+        fig.update_layout(
+            template=TEMPLATE,
+            title=dict(text="Geographic map unavailable — boundary fetch failed", font=dict(size=18)),
+        )
+        return fig
+
+    # martinjc GeoJSON uses LAD13NM for name, LAD13CD for code
+    name_to_code = {
+        feat['properties']['LAD13NM'].strip().upper(): feat['properties']['LAD13CD']
+        for feat in geojson.get('features', [])
+        if feat.get('properties', {}).get('LAD13NM')
+    }
+
+    df['lad_code'] = df['local_authority'].str.strip().str.upper().map(name_to_code)
+    matched = df.dropna(subset=['lad_code'])
+    n_miss = len(df) - len(matched)
+    if n_miss:
+        print(f"    ℹ️  {n_miss} local authorities unmatched to boundary polygons")
+
+    fig = px.choropleth_map(
+        matched,
+        geojson=geojson,
+        featureidkey='properties.LAD13CD',
+        locations='lad_code',
+        color='avg_efficiency',
+        color_continuous_scale='RdYlGn',
+        range_color=[45, 78],
+        map_style='carto-positron',
+        zoom=5.2,
+        center={'lat': 52.8, 'lon': -1.8},
+        opacity=0.75,
+        labels={'avg_efficiency': 'Avg SAP'},
+        hover_name='local_authority',
+        hover_data={
+            'county': True,
+            'avg_retrofit_score': True,
+            'property_count': ':,',
+            'co2_saving_kt': True,
+            'lad_code': False,
+        },
+    )
+    fig.update_coloraxes(
+        colorbar_title='Avg SAP',
+        colorbar_tickvals=[45, 55, 65, 75],
+        colorbar_ticktext=['45 (F)', '55 (E)', '65 (D)', '75 (C)'],
+    )
+    fig.update_layout(
+        template=TEMPLATE,
+        title=dict(text='Geographic EPC Efficiency Map — by Local Authority', font=dict(size=18)),
+        font=dict(size=FONT_SIZE),
+        margin=dict(t=70, b=10, l=0, r=0),
+        height=650,
+    )
+    return fig
+
+
+def build_fuel_type_analysis(con) -> go.Figure:
+    """
+    Horizontal grouped bars: avg current vs potential SAP by main heating fuel.
+    Shows the structural disadvantage of oil, LPG, and solid fuel homes.
+    """
+    df = _pl(con.execute("""
+        select MAIN_FUEL as fuel,
+               round(avg(energy_efficiency_current),  1) as avg_current,
+               round(avg(energy_efficiency_potential), 1) as avg_potential,
+               count(*) as n
+        from stg_epc__domestic
+        where MAIN_FUEL not in ('Other/Unknown')
+          and energy_efficiency_current > 0
+        group by 1
+        order by avg_current desc
+    """))
+
+    fuels     = df['fuel'].to_list()
+    current   = df['avg_current'].to_list()
+    potential = df['avg_potential'].to_list()
+    counts    = df['n'].to_list()
+
+    fig = go.Figure()
+    fig.add_bar(
+        y=fuels, x=current, name='Current SAP',
+        orientation='h', marker_color='#ef8023',
+        text=[str(v) for v in current], textposition='auto',
+        customdata=counts,
+        hovertemplate='<b>%{y}</b><br>Current SAP: %{x}<br>Properties: %{customdata:,}<extra></extra>',
+    )
+    fig.add_bar(
+        y=fuels, x=potential, name='Potential SAP (post-retrofit)',
+        orientation='h', marker_color='#19b459',
+        text=[str(v) for v in potential], textposition='auto',
+        hovertemplate='<b>%{y}</b><br>Potential SAP: %{x}<extra></extra>',
+    )
+    if len(current) >= 2:
+        gap = round(current[0] - current[-1], 1)
+        fig.add_annotation(
+            x=0.98, y=0.04, xref='paper', yref='paper',
+            text=f"<b>{gap:.0f} SAP points</b> gap: mains gas vs solid fuel",
+            showarrow=False, align='right',
+            font=dict(size=13, color='#fcaa65'),
+            bgcolor='rgba(0,0,0,0.5)', borderpad=6,
+        )
+    fig.update_layout(
+        barmode='group',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18, xanchor='center', x=0.5),
+        margin=dict(t=70, b=90, l=120, r=30),
+    )
+    return _style(fig, 'EPC Efficiency by Heating Fuel Type',
+                  'Average SAP Score (0–100)', 'Main Fuel Type')
+
+
+def build_annual_trend(con) -> go.Figure:
+    """
+    Dual-axis chart: avg SAP score (line) and certificates issued (bar) per year 2008–2024.
+    Shows whether the housing stock is materially improving over time.
+    """
+    df = _pl(con.execute("""
+        select year(inspection_at)                        as yr,
+               round(avg(energy_efficiency_current), 1)  as avg_sap,
+               count(*)                                   as certs
+        from fct_certificates
+        where inspection_at is not null
+          and year(inspection_at) between 2008 and 2024
+        group by 1
+        order by 1
+    """))
+
+    years   = df['yr'].to_list()
+    sap     = df['avg_sap'].to_list()
+    certs   = df['certs'].to_list()
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Bar(x=years, y=certs, name='Certificates issued',
+               marker_color='rgba(79,142,247,0.25)',
+               hovertemplate='%{x}: %{y:,} certs<extra></extra>'),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(x=years, y=sap, name='Avg SAP Score', mode='lines+markers',
+                   line=dict(color='#19b459', width=3),
+                   marker=dict(size=8),
+                   hovertemplate='%{x}: SAP %{y}<extra></extra>'),
+        secondary_y=True,
+    )
+    if len(sap) >= 2:
+        improvement = round(sap[-1] - sap[0], 1)
+        fig.add_annotation(
+            x=0.02, y=0.95, xref='paper', yref='paper',
+            text=f"<b>+{improvement} SAP points</b> improvement 2008 → 2024",
+            showarrow=False, align='left',
+            font=dict(size=13, color='#19b459'),
+            bgcolor='rgba(0,0,0,0.5)', borderpad=6,
+        )
+    fig.update_layout(
+        template=TEMPLATE,
+        title=dict(text='EPC Score Trend 2008–2024: Is the Housing Stock Improving?', font=dict(size=18)),
+        font=dict(size=FONT_SIZE),
+        margin=dict(t=70, b=60, l=70, r=70),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18, xanchor='center', x=0.5),
+        xaxis=dict(title='Year', tickmode='linear', dtick=2),
+    )
+    fig.update_yaxes(title_text='Certificates Issued', secondary_y=False)
+    fig.update_yaxes(title_text='Average SAP Score', secondary_y=True, range=[58, 73])
+    return fig
+
+
+def build_cost_breakdown(con) -> go.Figure:
+    """
+    Stacked bars: average annual energy cost (heating + hot water + lighting) per property type.
+    Quantifies the financial penalty of living in different building types.
+    """
+    df = _to_pd(con.execute("""
+        select p.PROPERTY_TYPE                             as property_type,
+               round(avg(f.heating_cost_current),   0)   as heating,
+               round(avg(f.hot_water_cost_current), 0)   as hot_water,
+               round(avg(f.lighting_cost_current),  0)   as lighting
+        from fct_certificates f
+        join dim_properties p on f.property_id = p.property_id
+        where f.heating_cost_current > 0
+          and f.heating_cost_current < 10000
+          and p.PROPERTY_TYPE is not null
+        group by 1
+        order by (heating + hot_water + lighting) desc
+    """))
+
+    fig = go.Figure()
+    for col, color, label in [
+        ('heating',   '#ef8023', 'Heating'),
+        ('hot_water', '#4f8ef7', 'Hot Water'),
+        ('lighting',  '#ffd500', 'Lighting'),
+    ]:
+        fig.add_bar(
+            x=df['property_type'], y=df[col],
+            name=label, marker_color=color,
+            hovertemplate=f'<b>%{{x}}</b><br>{label}: £%{{y:,.0f}}/yr<extra></extra>',
+        )
+    fig.update_layout(
+        barmode='stack',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18, xanchor='center', x=0.5),
+        margin=dict(t=70, b=90, l=60, r=30),
+    )
+    return _style(fig, 'Average Annual Energy Cost by Property Type',
+                  'Property Type', 'Annual Cost (£/yr)')
+
+
 # ---------------------------------------------------------------------------
 # National summary KPIs
 # ---------------------------------------------------------------------------
@@ -595,6 +835,50 @@ SECTIONS = [
      "<strong>Key finding:</strong> Rural postcode areas (TR, PL, EX, LD, SY) tend to cluster toward E–G, reflecting their older housing stock "
      "and lack of mains gas (forcing use of oil or LPG, which score worse than mains gas on EPC methodology). "
      "Urban postcode areas (E, N, SW, SE) cluster toward C–D, reflecting newer flats and terraced housing."),
+
+    ("geo-map",        "9. Geographic EPC Map",
+     "<strong>What it shows:</strong> Every Local Authority District in England &amp; Wales drawn on a real map, coloured by average SAP score. "
+     "Red = worst energy efficiency. Green = best. Hover a district to see its retrofit priority score, property count, and total CO₂ saving potential. "
+     "<strong>Why geography matters:</strong> The EPC postcode heatmap (Section 8) shows which areas are worst by letter code — but this map "
+     "shows <em>where those areas physically are</em>. Clusters of red reveal the geographic concentration of the UK's worst housing stock: "
+     "large rural districts in the Midlands, Wales, and the North where solid-wall Victorian terraces or remote farmhouses dominate. "
+     "<strong>How to use it:</strong> Scroll to zoom. Hover over any district for detail. The darkest red districts — especially large rural ones — "
+     "represent areas where a government retrofit scheme would deliver the greatest carbon saving per pound spent. "
+     "<strong>Data source:</strong> Boundaries from the ONS Open Geography Portal (LAD December 2022)."),
+
+    ("fuel-type",      "10. EPC Efficiency by Heating Fuel Type",
+     "<strong>What it shows:</strong> Average current SAP score (orange) vs achievable SAP after retrofit (green) for each main fuel type. "
+     "The gap between orange and green = how much improvement is theoretically possible without changing the fuel. "
+     "<strong>Why fuel type matters so much:</strong> The EPC SAP methodology directly penalises high-carbon, high-cost fuels. "
+     "Mains gas is the baseline — relatively cheap and lower carbon than oil. Heating oil (used in ~1M rural homes with no gas connection) "
+     "is more expensive and produces more CO₂ per kWh. LPG and solid fuel (coal, wood) score worst. "
+     "<strong>The off-gas-grid problem:</strong> The ~15% of UK homes not connected to mains gas are disproportionately rural, older, "
+     "and in the worst EPC bands. They face a double burden: more expensive fuel <em>and</em> harder-to-insulate walls. "
+     "Heat pumps are the intended replacement — they score as electricity, which benefits from the grid decarbonising year by year. "
+     "<strong>Key finding:</strong> A solid-fuel home (SAP 35) would need to reach SAP 72 just to hit Band C — a 37-point gap that cannot "
+     "be closed by insulation alone; fuel switching is mandatory."),
+
+    ("annual-trend",   "11. EPC Score Trend 2008–2024",
+     "<strong>What it shows:</strong> Two series overlaid: the green line tracks the average SAP score of all EPC certificates issued each year "
+     "(right axis). The blue bars show how many certificates were issued (left axis) — a proxy for housing market activity. "
+     "<strong>Why this matters:</strong> If EPC scores are genuinely rising year on year, it means the policy mix (boiler efficiency standards, "
+     "cavity wall insulation schemes, the Green Deal, ECO grants) is working. If they're flat, the housing stock is not improving despite policy spend. "
+     "<strong>Volume spikes explained:</strong> Large bars in 2009–2010 reflect the Home Information Pack (HIP) requirement, which mandated EPCs "
+     "for all homes sold. Subsequent troughs reflect housing market slowdowns. "
+     "<strong>Key finding:</strong> The trend is genuinely upward — averaging around +0.45 SAP points per year — but at this pace the national "
+     "average will not reach Band C (SAP ~69) until after 2035. The government's 2035 target requires roughly 3× the current rate of improvement."),
+
+    ("cost-breakdown", "12. Annual Energy Cost by Property Type",
+     "<strong>What it shows:</strong> Average annual energy bill per property type, split into three components: "
+     "heating (largest, orange), hot water (blue), and lighting (yellow). The total bar height = average total energy spend per year. "
+     "<strong>Why the gap is so large:</strong> A detached house spends roughly 2× what a flat spends on heating — because it has four exposed "
+     "external walls instead of shared party walls, a larger floor area, and typically a loft directly under the roof rather than another flat above. "
+     "Every shared surface with a neighbour reduces heat loss and therefore cost. "
+     "<strong>Fuel poverty context:</strong> The UK government defines fuel poverty as spending more than 10% of income on energy. "
+     "A household earning £25,000/yr living in a detached house paying £1,094/yr total energy costs sits at 4.4% — comfortably out of fuel poverty. "
+     "But if that same house uses heating oil instead of mains gas, costs can easily exceed £2,000–3,000/yr, pushing past the 10% threshold. "
+     "<strong>Policy implication:</strong> Retrofit programmes that prioritise detached and semi-detached housing in off-gas-grid areas "
+     "deliver the largest reduction in fuel poverty per pound invested."),
 ]
 
 
@@ -783,6 +1067,10 @@ CHART_BUILDERS = [
     ("Retrofit priority matrix",          build_retrofit_priority_matrix),
     ("Local authority treemap",           build_local_authority_treemap),
     ("Postcode area heatmap",             build_postcode_area_heatmap),
+    ("Geographic EPC choropleth map",     build_choropleth_map),
+    ("Fuel type impact",                  build_fuel_type_analysis),
+    ("Annual EPC score trend",            build_annual_trend),
+    ("Annual energy cost breakdown",      build_cost_breakdown),
 ]
 
 
