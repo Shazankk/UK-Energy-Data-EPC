@@ -254,8 +254,8 @@ def build_efficiency_by_age(con) -> go.Figure:
            'Construction Age Band', 'Average SAP Score (0–100)')
     fig.update_layout(
         barmode='group',
-        legend=dict(orientation='h', yanchor='bottom', y=-0.22, xanchor='center', x=0.5),
-        margin=dict(t=70, b=100, l=60, r=30),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.28, xanchor='center', x=0.5),
+        margin=dict(t=70, b=120, l=60, r=30),
     )
     return fig
 
@@ -514,7 +514,9 @@ def build_choropleth_map(con) -> go.Figure:
     if n_miss:
         print(f"    ℹ️  {n_miss} local authorities unmatched to boundary polygons")
 
-    fig = px.choropleth_map(
+    # px.choropleth uses Plotly's built-in SVG renderer — no map tiles required,
+    # works offline and when served as a static file (file:// or GitHub Pages).
+    fig = px.choropleth(
         matched,
         geojson=geojson,
         featureidkey='properties.LAD13CD',
@@ -522,10 +524,6 @@ def build_choropleth_map(con) -> go.Figure:
         color='avg_efficiency',
         color_continuous_scale='RdYlGn',
         range_color=[45, 78],
-        map_style='carto-positron',
-        zoom=5.2,
-        center={'lat': 52.8, 'lon': -1.8},
-        opacity=0.75,
         labels={'avg_efficiency': 'Avg SAP'},
         hover_name='local_authority',
         hover_data={
@@ -536,6 +534,8 @@ def build_choropleth_map(con) -> go.Figure:
             'lad_code': False,
         },
     )
+    # Fit the viewport tightly around the UK districts — hides the world base map
+    fig.update_geos(fitbounds='locations', visible=False)
     fig.update_coloraxes(
         colorbar_title='Avg SAP',
         colorbar_tickvals=[45, 55, 65, 75],
@@ -598,8 +598,8 @@ def build_fuel_type_analysis(con) -> go.Figure:
         )
     fig.update_layout(
         barmode='group',
-        legend=dict(orientation='h', yanchor='bottom', y=-0.18, xanchor='center', x=0.5),
-        margin=dict(t=70, b=90, l=120, r=30),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.28, xanchor='center', x=0.5),
+        margin=dict(t=70, b=120, l=120, r=30),
     )
     return _style(fig, 'EPC Efficiency by Heating Fuel Type',
                   'Average SAP Score (0–100)', 'Main Fuel Type')
@@ -652,8 +652,8 @@ def build_annual_trend(con) -> go.Figure:
         template=TEMPLATE,
         title=dict(text='EPC Score Trend 2008–2024: Is the Housing Stock Improving?', font=dict(size=18)),
         font=dict(size=FONT_SIZE),
-        margin=dict(t=70, b=60, l=70, r=70),
-        legend=dict(orientation='h', yanchor='bottom', y=-0.18, xanchor='center', x=0.5),
+        margin=dict(t=70, b=100, l=70, r=70),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.25, xanchor='center', x=0.5),
         xaxis=dict(title='Year', tickmode='linear', dtick=2),
     )
     fig.update_yaxes(title_text='Certificates Issued', secondary_y=False)
@@ -693,8 +693,8 @@ def build_cost_breakdown(con) -> go.Figure:
         )
     fig.update_layout(
         barmode='stack',
-        legend=dict(orientation='h', yanchor='bottom', y=-0.18, xanchor='center', x=0.5),
-        margin=dict(t=70, b=90, l=60, r=30),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.28, xanchor='center', x=0.5),
+        margin=dict(t=70, b=120, l=60, r=30),
     )
     return _style(fig, 'Average Annual Energy Cost by Property Type',
                   'Property Type', 'Annual Cost (£/yr)')
