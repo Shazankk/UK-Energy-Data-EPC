@@ -1,7 +1,5 @@
 name: Deploy EPC Dashboard to GitHub Pages
 
-# Triggers: any push to main that touches the dashboard,
-# or a manual run from the Actions tab.
 on:
   push:
     branches: [main]
@@ -11,34 +9,24 @@ on:
       - '.github/workflows/deploy-dashboard.yml'
   workflow_dispatch:
 
-# GitHub Pages deployment requires these token permissions.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Only one deployment runs at a time; in-progress runs are not cancelled
-# so a mid-deploy push doesn't leave the site in a broken state.
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Wrap the reports/ directory in a thin index so GitHub Pages serves
-      # dashboard.html as the root page.
       - name: Create Pages index
-        run: |
-          cp reports/dashboard.html reports/index.html
+        run: cp reports/dashboard.html reports/index.html
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -48,6 +36,13 @@ jobs:
         with:
           path: reports/
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
