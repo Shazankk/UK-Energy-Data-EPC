@@ -507,7 +507,9 @@ def _simplify_geojson(gj: dict, tol: float = 0.005) -> dict:
                                         for poly in geom['coordinates']]}
         else:
             new_geom = geom
-        feats.append({'type': 'Feature', 'id': feat.get('id'),
+        # Set top-level id to LAD13CD so Plotly's choropleth can match by id
+        feats.append({'type': 'Feature',
+                      'id': feat['properties'].get('LAD13CD', feat.get('id')),
                       'properties': feat['properties'], 'geometry': new_geom})
     return {'type': 'FeatureCollection', 'features': feats}
 
@@ -570,7 +572,7 @@ def build_choropleth_map(con) -> go.Figure:
     fig = px.choropleth(
         matched,
         geojson=geojson,
-        featureidkey='properties.LAD13CD',
+        featureidkey='id',
         locations='lad_code',
         color='avg_efficiency',
         color_continuous_scale='RdYlGn',
