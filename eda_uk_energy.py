@@ -567,47 +567,76 @@ def build_choropleth_map(con) -> go.Figure:
     if n_miss:
         print(f"    ℹ️  {n_miss} local authorities unmatched to boundary polygons")
 
-    # px.choropleth uses Plotly's built-in SVG renderer — no map tiles required,
-    # works offline and when served as a static file (file:// or GitHub Pages).
-    fig = px.choropleth(
-        matched,
-        geojson=geojson,
-        featureidkey='id',
-        locations='lad_code',
-        color='avg_efficiency',
-        color_continuous_scale='RdYlGn',
-        range_color=[45, 78],
-        labels={'avg_efficiency': 'Avg SAP'},
-        hover_name='local_authority',
-        hover_data={
-            'county': True,
-            'avg_retrofit_score': True,
-            'property_count': ':,',
-            'co2_saving_kt': True,
-            'lad_code': False,
-        },
-    )
-    # Fit viewport to UK; style background to match dark theme
+    # Draw each district as a filled Scattergeo polygon — bypasses choropleth
+    # ID-matching entirely, works in any static HTML context (file:// or Pages).
+    code_to_feat = {feat['id']: feat for feat in geojson['features'] if feat.get('id')}
+
+    fig = go.Figure()
+
+    for _, row in matched.iterrows():
+        feat = code_to_feat.get(row['lad_code'])
+        if feat is None:
+            continue
+        val  = float(row['avg_efficiency'])
+        t    = max(0.0, min(1.0, (val - 45) / (78 - 45)))
+        color = pc.sample_colorscale('RdYlGn', [t])[0]
+        geom = feat['geometry']
+
+        rings = (
+            [geom['coordinates'][0]] if geom['type'] == 'Polygon'
+            else [max(geom['coordinates'], key=lambda p: len(p[0]))[0]]
+            if geom['type'] == 'MultiPolygon' else []
+        )
+        for ring in rings:
+            fig.add_trace(go.Scattergeo(
+                lon=[p[0] for p in ring],
+                lat=[p[1] for p in ring],
+                mode='lines',
+                fill='toself',
+                fillcolor=color,
+                line=dict(color='rgba(80,80,80,0.4)', width=0.3),
+                hovertemplate=(
+                    f"<b>{row['local_authority']}</b><br>"
+                    f"Avg SAP: {val:.1f}<br>"
+                    f"County: {row.get('county','')}<br>"
+                    f"Retrofit Score: {row.get('avg_retrofit_score', 0):.1f}<br>"
+                    f"Properties: {int(row.get('property_count', 0)):,}"
+                    "<extra></extra>"
+                ),
+                name=row['local_authority'],
+                showlegend=False,
+            ))
+
+    # Invisible marker trace whose sole job is to render the colorbar
+    fig.add_trace(go.Scattergeo(
+        lon=[None], lat=[None], mode='markers',
+        marker=dict(
+            color=[45, 78], colorscale='RdYlGn', cmin=45, cmax=78,
+            showscale=True,
+            colorbar=dict(
+                title='Avg SAP', tickvals=[45, 55, 65, 75],
+                ticktext=['45 (F)', '55 (E)', '65 (D)', '75 (C)'],
+            ),
+            size=0,
+        ),
+        showlegend=False, hoverinfo='skip',
+    ))
+
     fig.update_geos(
-        fitbounds='locations',
-        visible=True,
-        showland=True,     landcolor='#1e2330',
-        showocean=True,    oceancolor='#0d1117',
+        projection_type='mercator',
+        lonaxis_range=[-8.5, 2.5],
+        lataxis_range=[49.5, 61.5],
+        showland=True,  landcolor='#1e2330',
+        showocean=True, oceancolor='#0d1117',
         showlakes=False,
-        showcoastlines=True, coastlinecolor='#444',
-        showframe=False,
-        showsubunits=False,
-    )
-    fig.update_coloraxes(
-        colorbar_title='Avg SAP',
-        colorbar_tickvals=[45, 55, 65, 75],
-        colorbar_ticktext=['45 (F)', '55 (E)', '65 (D)', '75 (C)'],
+        showcoastlines=True, coastlinecolor='#555',
+        showframe=False, showsubunits=False,
     )
     fig.update_layout(
         template=TEMPLATE,
         title=dict(text='Geographic EPC Efficiency Map — by Local Authority', font=dict(size=18)),
         font=dict(size=FONT_SIZE),
-        margin=dict(t=70, b=10, l=0, r=0),
+        margin=dict(t=70, b=10, l=0, r=10),
         height=650,
     )
     return fig
