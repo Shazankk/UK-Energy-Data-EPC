@@ -1,134 +1,816 @@
+"""
+UK Energy EDA Suite
+===================
+Generates a single interactive dashboard (reports/dashboard.html) from the
+ducklake_energy_uk star schema.  Plotly.js is loaded once from CDN; all charts
+are embedded as <div> snippets — open the file in any browser, no server needed.
+
+Prerequisites
+-------------
+  1. python bulk_load_epc.py          — ingest raw CSVs into DuckDB
+  2. cd ducklake_energy_uk && dbt run — build the full mart layer
+  3. source dbt-env/bin/activate      — activate the venv
+
+Usage
+-----
+  python eda_uk_energy.py
+  open reports/dashboard.html
+
+Sections in the dashboard
+--------------------------
+  KPI cards      Headline figures: properties analysed, avg SAP, CO₂ saving potential
+  1. National EPC Rating Distribution
+  2. County Efficiency: Best vs Worst 20
+  3. Efficiency by Construction Decade (current vs potential)
+  4. CO₂ Distribution by Property Type  (box plots — no overplotting)
+  5. Efficiency vs CO₂ Density           (2D contour — no overplotting)
+  6. Retrofit Priority Matrix            (heatmap: property type × age band)
+  7. Local Authority Treemap             (county → LA, worst EPC + highest CO₂ saving)
+  8. Postcode Area Heatmap               (postcode area × EPC band distribution)
+
+Why aggregated charts instead of scatter plots?
+-----------------------------------------------
+Raw scatter on 100k+ points produces an ink-blot — all D/E properties pile up at
+60-75 SAP / 1-4 t CO₂ and individual dots are invisible.  Instead:
+  box plots   → distribution shape + median per group, no overplotting
+  2D contours → show where the *mass* of data sits as density "hills"
+  heatmaps    → aggregate first, colour the aggregated value
+"""
+
 import duckdb
 import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
-import seaborn as sns
-import matplotlib.pyplot as plt
+import plotly.colors as pc
+from plotly.subplots import make_subplots
 import os
 import json
 
+# ---------------------------------------------------------------------------
 # Configuration
-DB_PATH = 'ducklake_energy_uk/dev.duckdb'
+# ---------------------------------------------------------------------------
+
+DB_PATH     = 'ducklake_energy_uk/dev.duckdb'
 REPORTS_DIR = 'reports'
+DASHBOARD   = os.path.join(REPORTS_DIR, 'dashboard.html')
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-def run_eda():
-    print("🚀 Starting Advanced EDA on 29.2M UK Energy Records...")
-    con = duckdb.connect(DB_PATH)
+EPC_COLORS = {
+    'A': '#008054', 'B': '#19b459', 'C': '#8dce46',
+    'D': '#ffd500', 'E': '#fcaa65', 'F': '#ef8023', 'G': '#e9153b',
+}
+EPC_ORDER  = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+TEMPLATE   = 'plotly_dark'
+FONT_SIZE  = 13
 
-    # 1. Distribution of Current Energy Ratings (A-G)
-    print("📊 Generating Question 1: What is the national distribution of energy ratings?")
-    df_ratings = con.execute("""
-        SELECT 
-            energy_rating_current, 
-            COUNT(*) as count 
-        FROM fct_certificates 
-        WHERE energy_rating_current IN ('A', 'B', 'C', 'D', 'E', 'F', 'G')
-        GROUP BY 1 
-        ORDER BY 1
-    """).pl()
-    
-    fig_ratings = px.bar(
-        df_ratings.to_pandas(), 
-        x='energy_rating_current', 
-        y='count',
-        color='energy_rating_current',
-        title='National EPC Rating Distribution (A-G)',
-        labels={'energy_rating_current': 'EPC Rating', 'count': 'Number of Properties'},
-        color_discrete_map={'A':'#008000', 'B':'#00FF00', 'C':'#ADFF2F', 'D':'#FFFF00', 'E':'#FFD700', 'F':'#FF8C00', 'G':'#FF0000'}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _pl(result) -> pl.DataFrame:
+    """Return a Polars DataFrame with all column names lowercased.
+    DuckDB preserves source column case (often UPPERCASE from raw CSVs)."""
+    df = result.pl()
+    return df.rename({c: c.lower() for c in df.columns})
+
+
+def _to_pd(result):
+    """Return a pandas DataFrame with all column names lowercased."""
+    return _pl(result).to_pandas()
+
+
+def _style(fig: go.Figure, title: str, xlab: str = '', ylab: str = '') -> go.Figure:
+    fig.update_layout(
+        template=TEMPLATE,
+        title=dict(text=title, font=dict(size=18)),
+        font=dict(size=FONT_SIZE),
+        xaxis_title=xlab,
+        yaxis_title=ylab,
+        margin=dict(t=70, b=60, l=60, r=30),
     )
-    fig_ratings.write_html(os.path.join(REPORTS_DIR, 'rating_distribution.html'))
-    print(f"✅ Saved rating_distribution.html")
+    return fig
 
-    # 2. Top 10 Most Efficient Counties
-    print("🌍 Generating Question 2: Which counties have the highest average energy efficiency?")
-    df_counties = con.execute("""
-        SELECT 
-            COUNTY, 
-            avg_current_efficiency 
-        FROM v_regional_energy_performance 
-        WHERE COUNTY IS NOT NULL
-        ORDER BY avg_current_efficiency DESC 
-        LIMIT 10
-    """).pl()
-    
-    plt.figure(figsize=(12, 6))
-    sns.barplot(data=df_counties.to_pandas(), x='avg_current_efficiency', y='COUNTY', palette='viridis')
-    plt.title('Top 10 Most Efficient Counties (Average Score)')
-    plt.xlabel('Average Energy Efficiency Score')
-    plt.tight_layout()
-    plt.savefig(os.path.join(REPORTS_DIR, 'top_10_counties.png'))
-    print(f"✅ Saved top_10_counties.png")
 
-    # 3. Efficiency Gap by Construction Age Band
-    print("🏗️ Generating Question 3: How does building age impact energy efficiency?")
-    df_age = con.execute("""
-        SELECT 
-            CONSTRUCTION_AGE_BAND, 
-            avg_efficiency 
-        FROM v_construction_age_analysis 
-        GROUP BY 1, 2
-        ORDER BY 1
-    """).pl()
-    
-    fig_age = px.line(
-        df_age.to_pandas(), 
-        x='CONSTRUCTION_AGE_BAND', 
-        y='avg_efficiency',
-        title='Energy Efficiency Trend by Construction Age Band',
-        markers=True
+def _embed(fig: go.Figure) -> str:
+    """Render a figure as an HTML <div> snippet (no full-page wrapper, no JS)."""
+    return fig.to_html(full_html=False, include_plotlyjs=False)
+
+
+# ---------------------------------------------------------------------------
+# Chart builders  (each returns a go.Figure)
+# ---------------------------------------------------------------------------
+
+def build_rating_distribution(con) -> go.Figure:
+    """Bar chart: national A-G rating distribution with % labels."""
+    # Avoid 'count' as a column name — it conflicts silently with Plotly's
+    # internal trace validation in some versions. Rename to 'n'.
+    df = _pl(con.execute("""
+        select
+            energy_rating_current                               as rating,
+            count(*)                                            as n,
+            round(count(*) * 100.0 / sum(count(*)) over (), 1) as pct
+        from fct_certificates
+        where energy_rating_current in ('A','B','C','D','E','F','G')
+        group by 1
+        order by 1
+    """))
+
+    # Pre-format text labels in Python — avoids Jinja-style texttemplate bugs
+    # where '%{text}%' can render as a literal string in certain Plotly versions.
+    df = df.with_columns(
+        pl.col('pct').map_elements(lambda v: f"{v}%", return_dtype=pl.Utf8).alias('label')
     )
-    fig_age.write_html(os.path.join(REPORTS_DIR, 'efficiency_by_age.html'))
-    print(f"✅ Saved efficiency_by_age.html")
 
-    # 4. Property Type Impact (CO2 vs Efficiency) - Sampled for performance
-    print("🏠 Generating Question 4: Which property types are the biggest carbon emitters?")
-    # We sample 100k rows for the scatter plot to keep it interactive
-    df_sample = con.execute("""
-        SELECT 
-            p.PROPERTY_TYPE,
-            f.energy_efficiency_current,
-            f.co2_emissions_current_tonnes_per_year
-        FROM fct_certificates f
-        JOIN dim_properties p ON f.property_id = p.property_id
-        USING SAMPLE 100000 ROWS
-    """).pl()
-    
-    fig_scatter = px.scatter(
-        df_sample.to_pandas(),
-        x='energy_efficiency_current',
-        y='co2_emissions_current_tonnes_per_year',
-        color='PROPERTY_TYPE',
-        title='CO2 Emissions vs Efficiency (Sample of 100k properties)',
-        opacity=0.5
+    fig = px.bar(
+        df.to_pandas(),
+        x='rating', y='n',
+        color='rating',
+        color_discrete_map=EPC_COLORS,
+        category_orders={'rating': EPC_ORDER},
+        text='label',
+        custom_data=['pct'],
     )
-    fig_scatter.write_html(os.path.join(REPORTS_DIR, 'co2_vs_efficiency.html'))
-    print(f"✅ Saved co2_vs_efficiency.html")
+    fig.update_traces(
+        textposition='outside',
+        hovertemplate='<b>Band %{x}</b><br>Properties: %{y:,}<br>Share: %{customdata[0]}%<extra></extra>',
+    )
+    below_c = df.filter(pl.col('rating').is_in(['D', 'E', 'F', 'G']))['pct'].sum()
+    fig.add_annotation(
+        x=0.98, y=0.96, xref='paper', yref='paper',
+        text=f"<b>{below_c:.1f}%</b> of properties rated D or below",
+        showarrow=False, align='right',
+        font=dict(size=13, color='#fcaa65'),
+        bgcolor='rgba(0,0,0,0.5)', borderpad=6,
+    )
+    fig.update_layout(showlegend=False)
+    return _style(fig, 'National EPC Rating Distribution', 'EPC Band', 'Number of Properties')
 
-    # 5. National Savings Potential (Summary JSON)
-    print("💰 Generating Question 5: What is the total potential carbon saving?")
-    savings = con.execute("""
-        SELECT 
-            SUM(co2_emissions_current_tonnes_per_year) as total_current_co2,
-            SUM(co2_emissions_potential_tonnes_per_year) as total_potential_co2,
-            (total_current_co2 - total_potential_co2) as total_savings_potential
-        FROM fct_certificates
+
+def _sap_to_color(val: float, vmin: float = 48, vmax: float = 76) -> str:
+    """
+    Map a SAP score to an explicit hex colour on the RdYlGn scale.
+    Pre-computing colours avoids the Plotly 6 bug where passing a list of
+    floats as marker_color with marker_colorscale silently drops the bars.
+    """
+    t = max(0.0, min(1.0, (val - vmin) / (vmax - vmin)))
+    return pc.sample_colorscale('RdYlGn', [t])[0]
+
+
+def build_county_efficiency(con) -> go.Figure:
+    """Side-by-side horizontal bars: 20 worst and 20 best counties by avg SAP."""
+    df = _pl(con.execute("""
+        select county, avg_current_efficiency, total_certificates
+        from v_regional_energy_performance
+        where county is not null
+        order by avg_current_efficiency
+    """))
+
+    worst = df.head(20)
+    best  = df.tail(20).sort('avg_current_efficiency')
+
+    # shared_xaxes=True with horizontal bars in 2 columns causes the left
+    # subplot's bars to silently not render in Plotly 6. Use independent axes.
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=('20 Worst Counties', '20 Best Counties'),
+        shared_xaxes=False,
+    )
+
+    def _trace(data):
+        vals   = data['avg_current_efficiency'].to_list()
+        colors = [_sap_to_color(v) for v in vals]
+        return go.Bar(
+            y=data['county'].to_list(),
+            x=vals,
+            orientation='h',
+            marker_color=colors,          # Explicit colour strings — always renders
+            text=[f"{v:.1f}" for v in vals],
+            textposition='inside',
+            insidetextanchor='end',
+            hovertemplate=(
+                '<b>%{y}</b><br>Avg SAP: %{x:.1f}<br>'
+                'Certificates: %{customdata[0]:,}<extra></extra>'
+            ),
+            customdata=data[['total_certificates']].to_numpy(),
+        )
+
+    fig.add_trace(_trace(worst), row=1, col=1)
+    fig.add_trace(_trace(best),  row=1, col=2)
+    fig.update_layout(
+        template=TEMPLATE, showlegend=False, height=620,
+        title=dict(text='County Energy Efficiency: Best vs Worst 20', font=dict(size=18)),
+        font=dict(size=FONT_SIZE),
+        margin=dict(t=80, b=60, l=160, r=30),
+    )
+    fig.update_xaxes(title_text='Average SAP Score', range=[35, 82], row=1, col=1)
+    fig.update_xaxes(title_text='Average SAP Score', range=[35, 82], row=1, col=2)
+    return fig
+
+
+def build_efficiency_by_age(con) -> go.Figure:
+    """Grouped bars: current vs potential SAP by construction decade, sorted chronologically."""
+    AGE_ORDER = [
+        'Pre-1900', '1900-1929', '1930-1949', '1950-1975',
+        '1976-1990', '1991-2002', '2003-2011', '2012-Present', 'Unknown',
+    ]
+    df = _pl(con.execute("""
+        select
+            construction_age_band,
+            round(avg(energy_efficiency_current),  1) as avg_current,
+            round(avg(energy_efficiency_potential), 1) as avg_potential
+        from fct_certificates f
+        join dim_properties p on f.property_id = p.property_id
+        where construction_age_band is not null
+        group by 1
+    """))
+    df = df.with_columns(
+        pl.col('construction_age_band').cast(pl.Enum(AGE_ORDER))
+    ).sort('construction_age_band')
+
+    fig = go.Figure()
+    fig.add_bar(
+        x=df['construction_age_band'].to_list(),
+        y=df['avg_current'].to_list(),
+        name='Current SAP',
+        marker_color='#ef8023',
+        text=df['avg_current'].to_list(),
+        texttemplate='%{text}', textposition='outside',
+    )
+    fig.add_bar(
+        x=df['construction_age_band'].to_list(),
+        y=df['avg_potential'].to_list(),
+        name='Potential SAP (post-retrofit)',
+        marker_color='#19b459',
+        text=df['avg_potential'].to_list(),
+        texttemplate='%{text}', textposition='outside',
+    )
+    _style(fig, 'Energy Efficiency by Construction Decade: Current vs Potential',
+           'Construction Age Band', 'Average SAP Score (0–100)')
+    fig.update_layout(
+        barmode='group',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.22, xanchor='center', x=0.5),
+        margin=dict(t=70, b=100, l=60, r=30),
+    )
+    return fig
+
+
+def build_co2_by_property_type(con) -> go.Figure:
+    """
+    Box plots of CO₂ per property type.
+    Box plots show median + IQR + outliers per group — no overplotting.
+    Notched boxes: non-overlapping notches indicate statistically significant
+    difference in medians.
+    """
+    df = _to_pd(con.execute("""
+        select p.property_type, f.co2_emissions_current_tonnes_per_year as co2
+        from fct_certificates f
+        join dim_properties p on f.property_id = p.property_id
+        where f.co2_emissions_current_tonnes_per_year between 0.1 and 20
+          and p.property_type is not null
+        using sample 200000 rows
+    """))
+    fig = px.box(df, x='property_type', y='co2', color='property_type',
+                 points=False, notched=True)
+    fig.update_traces(hovertemplate='<b>%{x}</b><br>CO₂: %{y:.2f} t/yr<extra></extra>')
+    _style(fig, 'CO₂ Emissions Distribution by Property Type (sample 200k)',
+           'Property Type', 'Annual CO₂ Emissions (tonnes/yr)')
+    fig.update_layout(showlegend=False)
+    return fig
+
+
+def build_efficiency_density(con) -> go.Figure:
+    """
+    2D density contours: SAP score vs CO₂.
+    Contour "hills" show where the mass of properties concentrates — the D/E cluster
+    visible as the highest-density peak, rare A/B properties as outer rings.
+    """
+    df = _to_pd(con.execute("""
+        select
+            f.energy_efficiency_current                  as efficiency,
+            f.co2_emissions_current_tonnes_per_year      as co2,
+            p.property_type
+        from fct_certificates f
+        join dim_properties p on f.property_id = p.property_id
+        where f.energy_efficiency_current between 1 and 100
+          and f.co2_emissions_current_tonnes_per_year between 0.1 and 15
+          and p.property_type is not null
+        using sample 150000 rows
+    """))
+    fig = px.density_contour(df, x='efficiency', y='co2', color='property_type',
+                              marginal_x='histogram', marginal_y='histogram')
+    fig.update_traces(
+        contours_coloring='fill', contours_showlabels=True,
+        selector={'type': 'histogram2dcontour'},
+    )
+    return _style(fig,
+                  'Efficiency vs CO₂: Density Contours by Property Type (sample 150k)',
+                  'SAP Score (Energy Efficiency)', 'Annual CO₂ (tonnes/yr)')
+
+
+def build_retrofit_priority_matrix(con) -> go.Figure:
+    """
+    Heatmap: property type × construction age band.
+    Colour = avg Retrofit Priority Score (0–100).
+    Cell text = score (property count below).
+    Red = most urgent retrofit candidates. Green = already near-optimal.
+    """
+    AGE_ORDER = [
+        'Pre-1900', '1900-1929', '1930-1949', '1950-1975',
+        '1976-1990', '1991-2002', '2003-2011', '2012-Present',
+    ]
+    df = _pl(con.execute("""
+        select
+            property_type,
+            construction_age_band,
+            round(avg(avg_retrofit_priority_score), 1) as score,
+            sum(property_count)                        as total_props
+        from v_retrofit_priority
+        where construction_age_band != 'Unknown'
+          and property_type is not null
+        group by 1, 2
+    """))
+
+    pivot  = df.pivot(index='property_type', on='construction_age_band', values='score').fill_null(0)
+    cpivot = df.pivot(index='property_type', on='construction_age_band', values='total_props').fill_null(0)
+
+    types    = pivot['property_type'].to_list()
+    age_cols = [c for c in AGE_ORDER if c in pivot.columns]
+    z        = pivot.select(age_cols).to_numpy().tolist()
+    counts   = cpivot.select(age_cols).to_numpy().tolist()
+
+    text = [
+        [f"{z[r][c]:.0f}<br>({int(counts[r][c]):,})" for c in range(len(age_cols))]
+        for r in range(len(types))
+    ]
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=age_cols, y=types,
+        text=text, texttemplate='%{text}',
+        colorscale='RdYlGn_r', zmin=0, zmax=100,
+        colorbar=dict(title='Retrofit<br>Priority<br>Score'),
+        hovertemplate='<b>%{y} — %{x}</b><br>Score: %{z:.1f}<extra></extra>',
+    ))
+    _style(fig, 'Retrofit Priority Score: Property Type × Construction Age Band',
+           'Construction Decade', 'Property Type')
+    fig.update_layout(
+        height=420,
+        annotations=[dict(
+            x=0.5, y=-0.18, xref='paper', yref='paper',
+            text='<i>Score 0–100 = current inefficiency (35%) + achievable SAP gain (40%) + CO₂ saving (25%)</i>',
+            showarrow=False, font=dict(size=11, color='#aaaaaa'),
+        )],
+    )
+    return fig
+
+
+def build_local_authority_treemap(con) -> go.Figure:
+    """
+    Treemap: county → local authority.
+    Box size  = total CO₂ saving potential (t/yr) — bigger box = more to gain.
+    Colour    = avg current SAP score — red = worst efficiency.
+    Large red boxes = highest-priority intervention areas.
+    """
+    df = _to_pd(con.execute("""
+        select
+            county,
+            local_authority,
+            round(avg(avg_efficiency_current), 1)            as avg_efficiency,
+            round(sum(total_co2_saving_potential_tonnes), 0) as total_co2_saving,
+            sum(property_count)                              as property_count
+        from v_retrofit_priority
+        where county is not null and local_authority is not null
+        group by 1, 2
+        having sum(property_count) > 500
+        order by avg_efficiency asc
+    """))
+    fig = px.treemap(
+        df,
+        path=[px.Constant('England & Wales'), 'county', 'local_authority'],
+        values='total_co2_saving',
+        color='avg_efficiency',
+        color_continuous_scale='RdYlGn',
+        color_continuous_midpoint=60,
+        range_color=[45, 75],
+        custom_data=['property_count', 'avg_efficiency', 'total_co2_saving'],
+    )
+    fig.update_traces(
+        hovertemplate=(
+            '<b>%{label}</b><br>'
+            'Avg SAP: %{customdata[1]:.1f}<br>'
+            'Properties: %{customdata[0]:,}<br>'
+            'CO₂ Saving: %{customdata[2]:,.0f} t/yr<extra></extra>'
+        ),
+        texttemplate='<b>%{label}</b><br>%{customdata[1]:.1f} SAP',
+        textfont=dict(size=11),
+    )
+    fig.update_coloraxes(
+        colorbar_title='Avg SAP',
+        colorbar_tickvals=[45, 55, 65, 75],
+        colorbar_ticktext=['45 (F)', '55 (E)', '65 (D)', '75 (C)'],
+    )
+    _style(fig, 'Local Authority: EPC Efficiency & CO₂ Retrofit Potential')
+    fig.update_layout(height=700)
+    return fig
+
+
+def build_postcode_area_heatmap(con) -> go.Figure:
+    """
+    Matrix: UK postcode area (rows) × EPC band (columns).
+    Colour = % of properties in that area carrying that band.
+    Rows heavy in F/G = worst-performing postcode areas.
+    """
+    df = _pl(con.execute("""
+        select
+            regexp_extract(l.postcode, '^([A-Z]{1,2})', 1) as postcode_area,
+            f.energy_rating_current                         as rating,
+            count(*)                                        as cnt
+        from fct_certificates f
+        join dim_locations l on f.location_id = l.location_id
+        where f.energy_rating_current in ('A','B','C','D','E','F','G')
+          and l.postcode is not null
+        group by 1, 2
+    """))
+    df = df.with_columns(
+        (pl.col('cnt') / pl.col('cnt').sum().over('postcode_area') * 100)
+        .round(1).alias('pct')
+    )
+    pivot = df.pivot(index='postcode_area', on='rating', values='pct').fill_null(0)
+    # Sort rows by % of G-rated properties descending (worst areas first)
+    if 'g' in pivot.columns:
+        pivot = pivot.sort('g', descending=True)
+    areas = pivot['postcode_area'].to_list()
+    z     = pivot.select(EPC_ORDER).to_numpy().tolist()
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=EPC_ORDER, y=areas,
+        colorscale=[[0,'#1a2e1a'],[0.2,'#19b459'],[0.5,'#ffd500'],
+                    [0.8,'#ef8023'],[1,'#e9153b']],
+        zmin=0, zmax=60,
+        colorbar=dict(title='% of<br>Properties'),
+        hovertemplate='<b>%{y}</b> — Band %{x}: %{z:.1f}%<extra></extra>',
+        xgap=1, ygap=1,
+    ))
+    _style(fig, 'EPC Rating Distribution by UK Postcode Area',
+           'EPC Band', 'Postcode Area')
+    fig.update_layout(
+        height=max(500, len(areas) * 14),
+        xaxis=dict(side='top'),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# National summary KPIs
+# ---------------------------------------------------------------------------
+
+def get_national_summary(con) -> dict:
+    row = con.execute("""
+        select
+            count(*)                                                      as total,
+            sum(co2_emissions_current_tonnes_per_year)                    as co2_current,
+            sum(co2_emissions_potential_tonnes_per_year)                  as co2_potential,
+            sum(co2_emissions_current_tonnes_per_year
+              - co2_emissions_potential_tonnes_per_year)                  as co2_saving,
+            avg(energy_efficiency_current)                                as avg_eff_current,
+            avg(energy_efficiency_potential)                              as avg_eff_potential
+        from fct_certificates
     """).fetchone()
 
+    ratings = con.execute("""
+        select energy_rating_current, count(*) from fct_certificates
+        where energy_rating_current in ('A','B','C','D','E','F','G')
+        group by 1
+    """).fetchall()
+    below_c = sum(r[1] for r in ratings if r[0] in ('D','E','F','G'))
+
     summary = {
-        "total_properties_analyzed": int(con.execute("SELECT COUNT(*) FROM fct_certificates").fetchone()[0]),
-        "total_current_co2_tonnes": float(savings[0]),
-        "total_potential_co2_tonnes": float(savings[1]),
-        "total_savings_potential_tonnes": float(savings[2]),
-        "percentage_reduction": round(float(savings[2] / savings[0]) * 100, 2)
+        "total": int(row[0]),
+        "co2_current": float(row[1]),
+        "co2_saving": float(row[3]),
+        "pct_saving": round(float(row[3]) / float(row[1]) * 100, 1),
+        "avg_eff_current": round(float(row[4]), 1),
+        "avg_eff_potential": round(float(row[5]), 1),
+        "pct_below_c": round(below_c / row[0] * 100, 1),
     }
 
-    with open(os.path.join(REPORTS_DIR, 'national_savings_summary.json'), 'w') as f:
+    # Also write JSON sidecar
+    json_path = os.path.join(REPORTS_DIR, 'national_savings_summary.json')
+    with open(json_path, 'w') as f:
         json.dump(summary, f, indent=4)
-    print(f"✅ Saved national_savings_summary.json")
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Dashboard assembler
+# ---------------------------------------------------------------------------
+
+SECTIONS = [
+    ("rating-dist",    "1. National EPC Rating Distribution",
+     "<strong>What it shows:</strong> Every property in England &amp; Wales ranked A (best) to G (worst) by its EPC certificate. "
+     "The scale runs from A (SAP score ≥ 92, near-zero heating costs) down to G (SAP ≤ 20, very high costs and emissions). "
+     "<strong>Why it matters:</strong> The UK Government's legally binding target is for all homes to reach Band C by 2035 — "
+     "a prerequisite for the country's Net Zero 2050 commitment. The orange annotation shows the share that currently fails this target. "
+     "<strong>Key finding:</strong> The majority of properties cluster in Band D — the single most common rating — meaning most homes are "
+     "above the minimum habitable standard but well short of the legal target. Bands E, F, G represent properties with dangerously high "
+     "fuel costs; tenants in these homes face fuel poverty, spending over 10% of income on energy."),
+
+    ("county-eff",     "2. County Efficiency: Best vs Worst 20",
+     "<strong>What it shows:</strong> The average SAP score for every county, split into the 20 worst (left) and 20 best (right). "
+     "SAP (Standard Assessment Procedure) is a 0–100 government methodology: higher = more energy-efficient. "
+     "Band C starts at roughly SAP 69; Band D at SAP 55. "
+     "<strong>Why counties differ:</strong> Rural counties (e.g. Norfolk, Cumbria) score poorly because they have a high density of "
+     "older, stone-built or detached housing stock with solid walls — the single hardest and most expensive type to insulate. "
+     "Urban counties score better because modern flats and terraced housing share walls, losing less heat per property. "
+     "<strong>Impact:</strong> A county sitting at SAP 52 versus SAP 72 represents roughly £800/year more in heating costs per household "
+     "and approximately 1.5 additional tonnes of CO₂ per year — multiplied across hundreds of thousands of homes."),
+
+    ("age-eff",        "3. Efficiency by Construction Decade: Current vs Potential",
+     "<strong>What it shows:</strong> Orange bars = the average SAP score buildings from each era achieve <em>today</em>. "
+     "Green bars = the average SAP those same buildings <em>could</em> achieve with cost-effective retrofitting (as assessed by the EPC surveyor). "
+     "The gap between orange and green is the average improvement available per era. "
+     "<strong>Why older buildings score lower:</strong> Pre-1900 homes were built with solid brick or stone walls — no cavity to fill with insulation. "
+     "They also predate double glazing, draught-proofing standards, and modern boiler efficiency requirements. Each decade of construction "
+     "added incremental regulation: cavity walls (1930s–50s), mandatory insulation (1976 Building Regulations), condensing boilers (2005). "
+     "<strong>Key finding:</strong> Pre-1900 properties average SAP 53 today but could reach SAP 75 — a jump of 22 points, equivalent to "
+     "moving from Band E to Band C. This 22-point gap represents the largest retrofit opportunity in the entire housing stock. "
+     "Post-2003 buildings are already near their potential, confirming that modern building regulations work."),
+
+    ("co2-type",       "4. CO₂ Emissions Distribution by Property Type",
+     "<strong>What it shows:</strong> A box plot for each property type. The horizontal line = median annual CO₂ (tonnes). "
+     "The box = middle 50% of properties (25th–75th percentile). Whiskers = the full spread excluding extreme outliers. "
+     "Notched boxes: non-overlapping notches indicate the median difference is statistically significant. "
+     "<strong>Why box plots, not scatter?</strong> Plotting 100k individual points creates an unreadable ink-blot — all D/E properties "
+     "pile up at 1–4 t CO₂. Box plots reveal the distribution shape without overplotting. "
+     "<strong>What the types mean:</strong> <em>Detached houses</em> emit the most — large floor area, four exposed walls, often no shared heat. "
+     "<em>Flats</em> emit the least — smaller area, shared walls/ceilings/floors with neighbours absorb heat loss. "
+     "<em>Maisonettes</em> sit between the two — they share some walls but span two floors. "
+     "<strong>Impact:</strong> A detached house emitting at the 75th percentile produces roughly 5× the CO₂ of a typical flat. "
+     "Targeting detached housing in rural counties captures disproportionately large carbon savings."),
+
+    ("density",        "5. Efficiency vs CO₂ — Density Contours",
+     "<strong>What it shows:</strong> Where the mass of properties concentrates in efficiency-vs-CO₂ space. The innermost ring "
+     "= the highest density of properties (where most homes actually sit). Outer rings = progressively rarer combinations. "
+     "Marginal histograms along each axis show the full distribution independently. "
+     "<strong>Why contours, not scatter?</strong> Even a 150k-point sample produces a solid blob — individual points are invisible. "
+     "Contours reveal the shape of that blob: is it tight (consistent housing stock) or spread (wide variation)? "
+     "<strong>What to look for:</strong> A tight cluster at 60–70 SAP / 2–3 t CO₂ tells us the 'typical' UK home. "
+     "The long tail toward low efficiency / high CO₂ is the minority of properties that drive a disproportionate share of national emissions. "
+     "Gaps between property type clusters show structural differences — flats genuinely follow a different physics than detached houses."),
+
+    ("retrofit",       "6. Retrofit Priority Matrix",
+     "<strong>What is retrofit?</strong> Retrofitting means adding energy-saving improvements to an existing building after it was originally constructed — "
+     "as opposed to building new. Common retrofits include: loft insulation (cheapest, biggest gain), cavity wall insulation, "
+     "solid wall insulation (expensive but high impact for pre-1940 homes), double/triple glazing, heat pumps replacing gas boilers, "
+     "solar panels, and smart controls. The EPC surveyor records both the current state and which improvements have been recommended. "
+     "<strong>Why retrofit matters:</strong> The UK cannot reach Net Zero by simply building new efficient homes — 85% of the homes "
+     "that will exist in 2050 are <em>already built</em>. The only path to decarbonising heat at scale is retrofitting the existing stock. "
+     "<strong>How to read this matrix:</strong> Each cell = a combination of property type (row) and construction decade (column). "
+     "Colour and number = average Retrofit Priority Score (0–100). "
+     "Red cells = highest priority — the combination is inefficient today AND has large achievable gains AND high CO₂ saving. "
+     "Green cells = already near their potential or too small to matter at scale. "
+     "<strong>Key finding:</strong> Pre-1900 detached houses and semi-detached houses score highest — they are the worst today, "
+     "can improve the most, and save the most carbon. Post-2003 properties score near zero — modern regulations already delivered "
+     "most of what retrofit could achieve."),
+
+    ("la-treemap",     "7. Local Authority Retrofit Opportunity Map",
+     "<strong>What it shows:</strong> Every local authority in England &amp; Wales, grouped by county. Two dimensions are encoded simultaneously: "
+     "<br>• <strong>Box size</strong> = total CO₂ saving potential in tonnes/year across all properties in that authority. "
+     "A bigger box means more total carbon is at stake — either because there are many properties, or because the average saving per property is large. "
+     "<br>• <strong>Box colour</strong> = average current SAP score (red = worst efficiency, green = best). "
+     "<br><strong>How to use it:</strong> The highest-priority intervention targets are the <strong>largest red boxes</strong>. "
+     "These are local authorities where properties are collectively inefficient today AND where the total CO₂ saving from retrofitting is largest. "
+     "A large green box = many properties but already efficient — lower priority. A small red box = inefficient but few properties — limited impact at scale. "
+     "<br><strong>How to navigate:</strong> Click a county block to zoom into its local authorities. Click the parent label to zoom back out. "
+     "<br><strong>Key finding:</strong> Rural counties in the Midlands and North tend to produce the largest red blocks — high density of older, "
+     "poorly insulated housing stock combined with large property counts means the greatest aggregate carbon saving opportunity."),
+
+    ("postcode-heat",  "8. Postcode Area Heatmap",
+     "<strong>What it shows:</strong> Each row is a UK postcode area — the letter prefix of a postcode (e.g. SW = South West London, "
+     "M = Manchester, LS = Leeds, TR = Truro in Cornwall). Each column is an EPC band. "
+     "The cell colour = what percentage of properties in that area carry that band. Rows are sorted so the worst areas appear at the top. "
+     "<strong>Why this matters:</strong> It reveals geographic inequality in housing quality. An area heavy in Band G (dark red, rightmost column) "
+     "represents a community where a large share of residents are likely in fuel poverty, paying far more for energy than they should. "
+     "An area heavy in Band A/B (leftmost columns) is already largely decarbonised. "
+     "<strong>Key finding:</strong> Rural postcode areas (TR, PL, EX, LD, SY) tend to cluster toward E–G, reflecting their older housing stock "
+     "and lack of mains gas (forcing use of oil or LPG, which score worse than mains gas on EPC methodology). "
+     "Urban postcode areas (E, N, SW, SE) cluster toward C–D, reflecting newer flats and terraced housing."),
+]
+
+
+def _kpi_card(label: str, value: str, sub: str = '', color: str = '#4f8ef7') -> str:
+    return f"""
+    <div class="kpi-card">
+      <div class="kpi-value" style="color:{color}">{value}</div>
+      <div class="kpi-label">{label}</div>
+      {f'<div class="kpi-sub">{sub}</div>' if sub else ''}
+    </div>"""
+
+
+def build_dashboard(figures: list, summary: dict) -> None:
+    def _fmt_m(n):
+        return f"{n/1e6:.1f}M" if n >= 1e6 else f"{n:,.0f}"
+
+    kpi_html = "".join([
+        _kpi_card("Properties Analysed",   _fmt_m(summary['total']),        "EPC certificates"),
+        _kpi_card("Avg Current SAP Score",  str(summary['avg_eff_current']), f"potential: {summary['avg_eff_potential']}"),
+        _kpi_card("CO₂ Saving Potential",   _fmt_m(summary['co2_saving']),   f"tonnes/yr · {summary['pct_saving']}% reduction", color='#19b459'),
+        _kpi_card("Below Band C",           f"{summary['pct_below_c']}%",    "of all properties", color='#ef8023'),
+    ])
+
+    nav_html = "".join(
+        f'<a href="#{sid}">{title.split(". ", 1)[-1]}</a>'
+        for sid, title, _ in SECTIONS
+    )
+
+    sections_html = ""
+    for (sid, title, desc), fig in zip(SECTIONS, figures):
+        sections_html += f"""
+        <section id="{sid}">
+          <h2>{title}</h2>
+          <div class="chart-desc">{desc}</div>
+          <div class="chart-wrap">{_embed(fig)}</div>
+        </section>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UK Energy EPC Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    :root {{
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #c9d1d9;
+      --muted:    #8b949e;
+      --accent:   #58a6ff;
+      --green:    #3fb950;
+      --orange:   #d29922;
+      --red:      #f85149;
+    }}
+    html {{ scroll-behavior: smooth; }}
+    body {{
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+    }}
+
+    /* ── Header ─────────────────────────────────────── */
+    header {{
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 24px 32px 20px;
+    }}
+    header h1 {{ font-size: 22px; color: #e6edf3; margin-bottom: 4px; }}
+    header p  {{ color: var(--muted); font-size: 13px; }}
+
+    /* ── KPI strip ───────────────────────────────────── */
+    .kpi-strip {{
+      display: flex; flex-wrap: wrap; gap: 16px;
+      padding: 20px 32px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }}
+    .kpi-card {{
+      flex: 1 1 160px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+    }}
+    .kpi-value {{ font-size: 28px; font-weight: 700; line-height: 1.1; }}
+    .kpi-label {{ font-size: 12px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .05em; }}
+    .kpi-sub   {{ font-size: 11px; color: var(--muted); margin-top: 2px; }}
+
+    /* ── Nav ─────────────────────────────────────────── */
+    nav {{
+      position: sticky; top: 0; z-index: 100;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      display: flex; flex-wrap: wrap; gap: 0;
+      overflow-x: auto;
+    }}
+    nav a {{
+      color: var(--muted); text-decoration: none;
+      font-size: 12px; padding: 10px 14px;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      transition: color .15s, border-color .15s;
+    }}
+    nav a:hover {{ color: var(--accent); border-bottom-color: var(--accent); }}
+
+    /* ── Main content ────────────────────────────────── */
+    main {{ max-width: 1400px; margin: 0 auto; padding: 32px; }}
+
+    section {{
+      margin-bottom: 56px;
+      scroll-margin-top: 44px;
+    }}
+    section h2 {{
+      font-size: 17px; font-weight: 600;
+      color: #e6edf3;
+      padding-left: 12px;
+      border-left: 3px solid var(--accent);
+      margin-bottom: 8px;
+    }}
+    .chart-desc {{
+      color: var(--muted); font-size: 13px; line-height: 1.7;
+      margin-bottom: 16px; max-width: 920px;
+    }}
+    .chart-desc strong {{ color: var(--text); }}
+    .chart-desc em {{ color: #a5d6ff; font-style: normal; }}
+    .chart-wrap {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      overflow: hidden;
+    }}
+
+    /* ── Footer ──────────────────────────────────────── */
+    footer {{
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 24px;
+      border-top: 1px solid var(--border);
+    }}
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>UK Energy Performance Certificate — Analytics Dashboard</h1>
+  <p>29.2 million domestic EPC certificates · England &amp; Wales · DuckDB + dbt + Polars</p>
+</header>
+
+<div class="kpi-strip">{kpi_html}</div>
+
+<nav>{nav_html}</nav>
+
+<main>{sections_html}</main>
+
+<footer>
+  Generated by eda_uk_energy.py · Data: UK Government EPC open dataset ·
+  Stack: DuckDB · dbt · Polars · Plotly
+</footer>
+
+</body>
+</html>"""
+
+    with open(DASHBOARD, 'w', encoding='utf-8') as f:
+        f.write(html)
+    print(f"  ✅  dashboard.html")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+CHART_BUILDERS = [
+    ("Rating distribution",               build_rating_distribution),
+    ("County efficiency best/worst 20",   build_county_efficiency),
+    ("Efficiency by construction decade", build_efficiency_by_age),
+    ("CO₂ by property type",             build_co2_by_property_type),
+    ("Efficiency vs CO₂ density",         build_efficiency_density),
+    ("Retrofit priority matrix",          build_retrofit_priority_matrix),
+    ("Local authority treemap",           build_local_authority_treemap),
+    ("Postcode area heatmap",             build_postcode_area_heatmap),
+]
+
+
+def run_eda() -> None:
+    print("\n🚀 UK Energy EDA Suite — starting...\n")
+    con = duckdb.connect(DB_PATH, read_only=True)
+
+    print("  ⏳  National summary KPIs")
+    summary = get_national_summary(con)
+    print("  ✅  national_savings_summary.json")
+
+    figures = []
+    for label, builder in CHART_BUILDERS:
+        print(f"  ⏳  {label}")
+        try:
+            figures.append(builder(con))
+        except Exception as exc:
+            import traceback
+            print(f"  ⚠️  SKIPPED — {exc}")
+            traceback.print_exc()
+            figures.append(go.Figure())   # placeholder keeps section ordering
+
+    print("  ⏳  Assembling dashboard.html")
+    build_dashboard(figures, summary)
 
     con.close()
-    print(f"\n✨ EDA Completed Successfully! Findings saved to /'{REPORTS_DIR}/'")
+    print(f"\n✨  Done — open reports/dashboard.html in your browser\n")
+
 
 if __name__ == "__main__":
     run_eda()

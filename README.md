@@ -1,181 +1,323 @@
 # UK Energy Data Masterclass (EPC)
 
-🚀 **A Modern Analytics Journey: From 29.2 Million Flat Records to a Normalized Star Schema.**
+**A Modern Analytics Journey: From 29.2 Million Flat Records to a Normalized Star Schema.**
 
-This repository is more than a data pipeline—it’s a learning tool designed to demonstrate how to handle massive datasets (~50GB, 29.2M rows) using a local, high-performance stack: **DuckDB**, **dbt**, and **Polars**.
+This repository is both a working data pipeline and a learning resource. It demonstrates how to handle a massive real-world dataset (~50GB, 29.2M rows) using a local, high-performance stack — **DuckDB**, **dbt**, and **Polars** — on a single laptop in under 60 seconds.
 
----
-
-## 🧭 The Core Objective
-The UK Energy Performance Certificate (EPC) dataset is the primary record of building efficiency in Britain. 
-- **The Challenge**: How do you analyze 30 million records, deduplicate properties, and generate interactive reports on a single laptop in under 60 seconds?
-- **The Answer**: A **Medallion Architecture** using modern in-process OLAP tools.
+**[Live Dashboard →](https://shazankk.github.io/UK-Energy-Data-EPC-/)** — Interactive EPC analytics: rating distributions, retrofit priority scores, local authority treemap, postcode heatmaps.
 
 ---
 
-## 🏗️ Architecture & Learning Pathway
+## What is EPC Data?
 
-We move through three distinct logical layers to ensure data integrity and query performance.
+An **Energy Performance Certificate (EPC)** is a legal document required in the UK whenever a property is built, sold, or rented. Every certificate records how energy-efficient a building is on a scale of **A (most efficient) to G (least efficient)**, along with details like CO2 emissions, heating costs, property age, and construction type.
+
+The UK Government publishes all EPC records as open data. The full domestic dataset contains **29.2 million certificates**, representing decades of inspections across England and Wales. This makes it one of the richest freely available datasets for understanding the UK's built environment and its path to Net Zero carbon emissions.
+
+**Why does it matter?**
+- Buildings account for ~20% of the UK's total CO2 emissions.
+- The government's Net Zero target requires most homes to reach EPC Band C by 2035.
+- This dataset lets us model *where* the worst-performing properties are, *how much* improvement is possible, and *which property types* need the most intervention.
+
+---
+
+## The Core Challenge
+
+The raw data is delivered as hundreds of CSV files — a single flat table with 100+ columns, containing duplicate entries because the same property gets re-inspected every time it is sold. Analyzing this at scale requires:
+
+1. **Speed**: 29.2M rows cannot be loaded into a standard spreadsheet or even basic Python scripts without running out of memory.
+2. **Deduplication**: The same building may have 10+ certificates. We need the *latest* state of each property.
+3. **Consistency**: The raw data contains 30+ inconsistent values for "fuel type" and "construction age" that must be standardized before any analysis is meaningful.
+4. **Structure**: A flat 100-column table is slow to query and hard to maintain. It needs to be broken into a proper relational model.
+
+---
+
+## The Solution: Medallion Architecture
+
+We process the data through three distinct logical layers, each building on the previous:
 
 ```mermaid
 graph TD
-    subgraph "1. Ingestion (Bronze Layer)"
-        CSV[Bulk EPC CSVs 29.2M Rows] -->|bulk_load_epc.py| RAW[(DuckDB: raw.epc_domestic)]
+    subgraph "1. Bronze Layer — Raw Ingestion"
+        CSV[Bulk EPC CSVs\n29.2M Rows, 100+ Columns] -->|bulk_load_epc.py| RAW[(DuckDB\nraw.epc_domestic)]
     end
 
-    subgraph "2. Naturalization (Silver Layer)"
-        RAW --> STG[staging.stg_epc__domestic]
-        NoteSTG[Clean Nulls, Cast Types, Standardize Age/Fuel]
+    subgraph "2. Silver Layer — Staging & Naturalization"
+        RAW --> STG[stg_epc__domestic\nClean · Cast · Standardize]
     end
 
-    subgraph "3. Normalization (Gold Layer)"
-        STG --> DIM_P[marts.dim_properties]
-        STG --> DIM_L[marts.dim_locations]
-        STG --> FCT_C[marts.fct_certificates]
-        
-        DIM_P --> FCT_AGG[marts.fct_property_aggregations]
+    subgraph "3. Gold Layer — Marts & Star Schema"
+        STG --> DIM_P[dim_properties\nOne row per building]
+        STG --> DIM_L[dim_locations\nOne row per postcode]
+        STG --> FCT_C[fct_certificates\nOne row per inspection]
+        STG --> FCT_E[fct_property_energy_performance\nEfficiency gains per certificate]
+        DIM_P --> FCT_AGG[fct_property_aggregations\nRolled up by region/type/year]
         DIM_L --> FCT_AGG
         FCT_C --> FCT_AGG
     end
 
-    subgraph "4. Analytics & BI"
-        FCT_C --> V_REGIONAL[v_regional_performance]
-        FCT_C --> V_AGE[v_age_analysis]
+    subgraph "4. Analytics Layer — Views & Reporting"
+        FCT_C --> V1[v_regional_energy_performance]
+        FCT_C --> V2[v_construction_age_analysis]
+        FCT_C --> V3[v_property_efficiency_gaps]
         FCT_AGG --> EDA[eda_uk_energy.py]
-        EDA --> HTML[Interactive Reports]
+        EDA --> HTML[Interactive Plotly Reports]
     end
 ```
 
----
-
-## 📚 Reference & Deep Dives
-
-For a detailed understanding of the engineering principles, industrial standards, and the step-by-step transformation lifecycle, refer to these masterclass documents:
-
-- 🎓 **[dbt Masterclass (DBT_WORKFLOW.md)](file:///Users/shazank/Projects/Backend/dbt_learn/DBT_WORKFLOW.md)**: Deep dive into Medallion Architecture, normalization, and dbt core concepts.
-- 📦 **[Raw Ingestion (bulk_load_epc.py)](file:///Users/shazank/Projects/Backend/dbt_learn/bulk_load_epc.py)**: The 30M row high-velocity loading script.
-- 📊 **[EDA Suite (eda_uk_energy.py)](file:///Users/shazank/Projects/Backend/dbt_learn/eda_uk_energy.py)**: Interactive Plotly/Polars analysis.
+| Layer | Also Called | Purpose |
+|---|---|---|
+| Bronze | Raw | Data exactly as it arrived — no transformations |
+| Silver | Staging | Cleaned, typed, and standardized — trustworthy data |
+| Gold | Marts | Business-structured — optimized for queries and analysis |
+| Analytics | Views | Pre-joined, ready-to-use reporting layers |
 
 ---
 
-## 🧱 Architecture Selection & Rationale
+## Technology Stack
 
-Why did we choose this specific stack? To build a **production-grade warehouse on a laptop**. Here is the breakdown of our "Modern Data Stack (Local Edition)":
+### Why not just use Excel or Pandas?
 
-### 🦆 DuckDB: The Storage & SQL Engine
-*   **The Role**: In-process OLAP (Online Analytical Processing) database.
-*   **The "Why"**: Traditional databases (Postgres/MySQL) struggle with 30M row aggregations on limited RAM. DuckDB uses **vectorized query execution** and a columnar storage format, allowing it to perform sub-second analytical queries on 29.2M rows directly from disk. It's essentially "SQLite for Analytics."
-
-### 🐻 Polars: The Processing Engine
-*   **The Role**: Lightning-fast DataFrame library (the successor to Pandas).
-*   **The "Why"**: While DuckDB is great for SQL, Polars is superior for complex data manipulations and machine learning preparation. Written in **Rust**, Polars is multi-threaded by design and incredibly memory-efficient. It allows us to perform EDA on the entire dataset without ever hitting a "Memory Error."
-
-### 🏹 Apache Arrow: The Universal Bridge
-*   **The Role**: In-memory columnar data format.
-*   **The "Why"**: This is the "secret sauce." Transitioning data from a database (DuckDB) to a DataFrame (Polars) usually involves slow serialization. Because both tools support **Apache Arrow**, data is passed via **zero-copy**. The data stays in the same place in memory, and both tools just look at it. This makes the "DuckDB -> Polars" transition instantaneous.
-
-### 🛠️ dbt (Data Build Tool): The Orchestrator
-*   **The Role**: Transformation management and Data Modeling.
-*   **The "Why"**: dbt allows us to treat data like software. We get **version control**, **automated testing**, and **lineage tracking**. Without dbt, 100+ lines of SQL transformation would be a "black box"; with dbt, it's a modular, documented pipeline.
-
-### 📈 Plotly & Seaborn: The Visual Layer
-*   **The Role**: Static and Interactive data visualization.
-*   **The "Why"**: Plotly provides the interactive "drill-down" capability (seeing specific UPRNs in a cluster), while Seaborn provides the statistical rigor for distribution plots and efficiency correlations.
+29.2 million rows at ~50GB simply does not fit in memory using traditional tools. Pandas would throw a `MemoryError`. Excel supports 1 million rows. We need purpose-built OLAP (Online Analytical Processing) tools.
 
 ---
 
-## 🎓 Key Learning Moments
+### DuckDB — The Storage & SQL Engine
 
-### 1. Why Normalization? (Flat to Star Schema)
-Initially, the dataset is a single flat table with 100+ columns. Storing address details and property characteristics repeatedly for every 10 years of inspections is inefficient.
+**What it is**: An in-process analytical database. Think "SQLite for analytics."
 
-#### 🎓 Teaching Moment: The "Latest Property" Pattern
-To create `dim_properties`, we must isolate the most recent state of a building. We use a **Window Function** to rank inspections per UPRN:
+**Why it matters**: Traditional databases like Postgres or MySQL are built for *transactional* workloads (fast single-row reads/writes). DuckDB is built for *analytical* workloads (aggregating millions of rows at once). It achieves this through:
+
+- **Columnar storage**: Instead of storing a full row at a time (like a CSV), DuckDB stores each column separately on disk. When you run `SELECT AVG(co2_emissions)`, it only reads the one CO2 column — not all 100 columns for 29M rows.
+- **Vectorized execution**: SQL operations are applied to batches of thousands of values at once using CPU SIMD instructions, rather than row-by-row. This is the same principle that makes GPUs fast for graphics.
+- **Zero external dependencies**: Runs entirely inside the Python process. No server to start, no connection strings, no credentials.
+
+**Result**: Sub-second aggregations on 29.2 million rows, directly on a laptop.
+
+---
+
+### dbt — The Transformation Orchestrator
+
+**What it is**: dbt (Data Build Tool) manages the SQL transformation layer. It lets you write modular, version-controlled SQL and handles dependency ordering, testing, and documentation automatically.
+
+**Why it matters**: Without dbt, a pipeline with 10+ SQL models is a folder of scripts you run in some specific order you have to remember. With dbt:
+- Models know their dependencies via `{{ ref('model_name') }}` — dbt builds a DAG and runs them in the right order automatically.
+- Every model is testable with one command (`dbt test`).
+- The full lineage graph (what feeds what) is generated automatically as documentation.
+
+---
+
+### Polars — The Processing Engine
+
+**What it is**: A DataFrame library for Python, written in Rust. Think "Pandas, but 10-100x faster."
+
+**Why it matters**: While DuckDB excels at SQL aggregations, complex Python-side transformations and visualisation preparation are better done in a DataFrame. Polars uses:
+- **Lazy evaluation**: You can chain operations and Polars builds an optimized execution plan before touching a single row.
+- **Multi-threading**: Operations automatically use all CPU cores.
+- **Memory efficiency**: Rust's memory model means no garbage collection pauses and minimal copying.
+
+---
+
+### Apache Arrow — The Zero-Copy Bridge
+
+**What it is**: A standardized in-memory columnar data format. Not a tool you interact with directly — it's the shared "language" between DuckDB and Polars.
+
+**Why it matters**: Normally, moving data from a database to a DataFrame involves serializing to bytes (slow), transferring, then deserializing (slow again). Because both DuckDB and Polars speak Apache Arrow natively, data stays in the same memory location — there is **zero copying**. The transfer of 29M rows from DuckDB to Polars is effectively instantaneous.
+
+```python
+# This single line hands millions of rows to Polars with zero overhead
+df = conn.query("SELECT * FROM fct_certificates").pl()
+```
+
+---
+
+### Plotly & Seaborn — The Visual Layer
+
+- **Plotly**: Interactive charts with drill-down capability — hover over a data point to see the specific UPRN, address, and certificate details.
+- **Seaborn**: Statistical distribution plots for efficiency correlations, age-band breakdowns, and regional comparisons.
+
+---
+
+## Key Engineering Concepts
+
+### 1. Normalization: From Flat to Star Schema
+
+The raw data is one flat table with 100+ columns. Every time a property is inspected, *all* of its address and physical characteristics are repeated — even if nothing changed. This is wasteful and slow.
+
+**Normalization** splits this into purpose-specific tables:
+
+| Table | Grain (one row = ?) | Contains |
+|---|---|---|
+| `dim_properties` | One building (UPRN) | Property type, age band, floor area — the *latest* state |
+| `dim_locations` | One postcode | County, town, local authority, constituency |
+| `fct_certificates` | One inspection event | Energy ratings, CO2 figures, costs, dates |
+| `fct_property_energy_performance` | One inspection event | Efficiency gain potential, total annual cost |
+| `fct_property_aggregations` | One group (county × type × tenure × year) | Pre-aggregated counts, averages for BI dashboards |
+
+**The "Latest Property" Pattern**: To build `dim_properties` we must isolate the most recent inspection per building. We use a SQL Window Function:
 
 ```sql
--- models/marts/energy/dim_properties.sql
-with ranked_properties as (
+-- Get the most recent state of each building
+with ranked as (
     select
-        uprn, property_type, built_form, -- ... other fields
+        uprn, property_type, construction_age_band, -- ...
         row_number() over (
-            partition by uprn 
-            order by inspection_at desc, lodgement_at desc
-        ) as property_rank
+            partition by uprn                       -- "for each building..."
+            order by inspection_at desc             -- "...rank by newest first"
+        ) as rn
     from stg_epc__domestic
 )
-select * from ranked_properties where property_rank = 1
+select * from ranked where rn = 1  -- Keep only the most recent
 ```
 
-- **`dim_locations`**: We deduplicate postcodes and counties to create a lightweight geographic registry.
-- **`fct_certificates`**: A thin fact table containing only metrics (CO2, costs) and keys, allowing for sub-second joins.
+A **Window Function** (`ROW_NUMBER() OVER (...)`) assigns a rank to each row *within a group* without collapsing the rows. It's one of the most powerful features in SQL for analytics.
 
-### 2. The Power of "Surrogate Keys"
-We use `dbt_utils.generate_surrogate_key` (MD5 hashing) to create deterministic primary keys.
+---
+
+### 2. Surrogate Keys vs Natural Keys
+
+A **natural key** is an ID that exists in the real world: a postcode, a UPRN, a passport number. The problem with using natural keys directly as table join keys is that they can change, they can be null, or they may not exist at all in some systems.
+
+A **surrogate key** is a system-generated ID we create ourselves. We use MD5 hashing via `dbt_utils.generate_surrogate_key`:
 
 ```sql
--- Example: Creating a unique location ID from a postcode
+-- Creates a deterministic, consistent ID from any input value
 {{ dbt_utils.generate_surrogate_key(['postcode']) }} as location_id
+
+-- The same postcode ALWAYS produces the same location_id
+-- 'SW1A 1AA' → always hashes to the same 32-character hex string
 ```
 
-This allows us to link tables reliably without managing auto-incrementing integers across different load batches.
-
-### 3. The "Arrow Bridge" (DuckDB <-> Polars)
-One of the most powerful patterns in modern Python analytics:
-- **DuckDB** handles the heavy SQL lifting and disk I/O.
-- **Apache Arrow** acts as the cross-language memory format.
-- **Polars** receives the data with **zero-copy overhead**, allowing it to process millions of rows in milliseconds using its multi-threaded execution engine.
+**Why this matters**: Even if you reload all 29.2M rows from scratch, every `location_id` will be identical. You can safely join across load batches without managing auto-incrementing integers or worrying about order of insertion.
 
 ---
 
-## ⚙️ Technical Deep Dive
+### 3. Materialization Strategies
 
-### I. Ingestion Logic (`bulk_load_epc.py`)
-Handling 30M rows requires speed. We use DuckDB's `read_csv_auto` which parallelizes CSV sniffing and loading across all CPU cores.
-> **Tip**: We load as `VARCHAR` first. Why? Because manual type-casting mid-load is the #1 cause of ingestion failure on messy real-world data. We "naturalize" types safely in the staging layer.
+**Materialization** controls how dbt physically stores a model's result in the database.
 
-### II. The dbt Transformation Workflow
-Our dbt project (`ducklake_energy_uk`) manages complexity:
-- **Lineage**: Every table is connected via `ref()` functions.
-- **Modularity**: Logic is broken into small, testable blocks.
-- **Materialization**: Large tables are materialized as `table`, while analytical summaries are kept as `view` for flexibility.
+| Strategy | What it does | When to use |
+|---|---|---|
+| `view` | Stores the SQL query definition only. Result is computed every time you query it. | Analytical summaries that are cheap to recompute (`v_regional_energy_performance`) |
+| `table` | Runs the query once and stores the result as a physical table. | Large, expensive transformations — `dim_properties`, `fct_certificates` |
+| `incremental` | Only processes new/changed rows since the last run. | Very large tables where a full refresh would take too long |
+| `ephemeral` | The model is inlined as a CTE — never stored at all. | Intermediate logic shared across models |
 
-### III. High-Performance EDA (`eda_uk_energy.py`)
-Using **Lazy Polars**, we scan the database without loading it all into RAM.
+In this project, all dimension and fact tables are `table` (computed once, fast to query). All analytics views are `view` (always fresh, flexible to change).
+
+---
+
+### 4. The DuckDB → Polars Arrow Bridge in Detail
+
+```
+DuckDB (SQL world)
+    ↓ executes query, holds result as Arrow arrays in memory
+Apache Arrow buffer (shared memory)
+    ↑ Polars reads pointer to same memory — no copy made
+Polars (Python world)
+```
+
+This pattern is used in `eda_uk_energy.py`:
 ```python
-# The Secret Sauce
-df = conn.query("SELECT * FROM fct_certificates").pl() # Returns a Polars DataFrame via Arrow
+import duckdb, polars as pl
+
+conn = duckdb.connect("ducklake_energy_uk/dev.duckdb")
+
+# .pl() = "give me a Polars DataFrame via Arrow"
+df = conn.query("SELECT * FROM fct_property_aggregations").pl()
+
+# Now df is a full Polars DataFrame — billions of cells, zero serialization cost
 ```
 
 ---
 
-## 🏁 Installation & Learning Guide
+## Project Structure
 
-### 1. Setup Your Lab
+```
+dbt_learn/
+├── bulk_load_epc.py              # Step 1: Ingest CSVs → DuckDB
+├── eda_uk_energy.py              # Step 3: DuckDB → Polars → Plotly reports
+├── requirements.txt              # Python dependencies
+├── DBT_WORKFLOW.md               # Deep dive: dbt concepts and this project's workflow
+├── ducklake_energy_uk/           # The dbt project
+│   ├── dbt_project.yml           # Project configuration
+│   ├── packages.yml              # External packages (dbt_utils)
+│   ├── models/
+│   │   ├── staging/epc/          # Silver layer: stg_epc__domestic
+│   │   └── marts/
+│   │       ├── energy/           # Gold layer: dims, facts
+│   │       └── analytics/        # Views: regional, age, efficiency gap
+│   ├── macros/                   # Custom Jinja SQL macros
+│   ├── seeds/                    # Static reference CSVs
+│   └── tests/                    # Custom singular data tests
+└── all-domestic-certificates/    # Raw EPC CSVs (~50GB, not in git)
+```
+
+---
+
+## Installation & Setup
+
+### Prerequisites
+
+- Python 3.10+
+- ~60GB free disk space (for raw CSVs)
+- Download the EPC bulk data from: [https://epc.opendatacommunities.org/](https://epc.opendatacommunities.org/) and extract into `all-domestic-certificates/`
+
+### 1. Create the Python Environment
+
 ```bash
 git clone https://github.com/Shazankk/UK-Energy-Data-EPC.git
 cd dbt_learn
 python3 -m venv dbt-env
-source dbt-env/bin/activate
+source dbt-env/bin/activate      # On Windows: dbt-env\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Execute the Pipeline
-1.  **Ingest**: `python bulk_load_epc.py` (Watch 29.2M rows fly into DuckDB).
-2.  **Transform**: `cd ducklake_energy_uk && dbt deps && dbt run` (Build the Star Schema).
-3.  **Analyze**: `cd .. && python eda_uk_energy.py` (Generate interactive reports).
+### 2. Run the Full Pipeline
+
+```bash
+# Step 1 — Ingest: Load 29.2M rows from CSV into DuckDB
+python bulk_load_epc.py
+
+# Step 2 — Transform: Build the star schema via dbt
+cd ducklake_energy_uk
+dbt deps          # Install dbt_utils package
+dbt run           # Execute all models in dependency order
+dbt test          # Validate data quality (not_null, accepted_values, unique)
+
+# Step 3 — Analyze: Generate interactive HTML reports
+cd ..
+python eda_uk_energy.py
+```
+
+### 3. Explore the Lineage Graph
+
+```bash
+cd ducklake_energy_uk
+dbt docs generate   # Compile documentation
+dbt docs serve      # Opens browser at localhost:8080 with visual DAG
+```
 
 ---
 
-## 🗺️ Path to Zero (The Roadmap)
+## Roadmap
 
-This project is part of a journey toward UK Net Zero.
-- [x] **Phase 1**: 29.2M Ingestion & Core Star Schema (Normalization).
-- [x] **Phase 2**: Standardized Construction Age Bands, Fuel Types, and Automated dbt Quality Tests (A-G constraints).
-- [x] **Documentation**: Created the Learning Masterclass and dbt visual lineage.
-- [ ] **Phase 3**: Advanced Energy Prediction Modeling and Carbon-Neutral Scenario Simulations.
-- [ ] **Deployment**: Visual Analytics Dashboard (Streamlit/Next.js) for regional energy performance comparison.
+- [x] **Phase 1**: 29.2M row ingestion and core star schema (dim/fct normalization)
+- [x] **Phase 2**: Standardized construction age bands, fuel types, and automated dbt quality tests
+- [x] **Phase 3**: Retrofit Priority Score model (`v_retrofit_priority`) — composite 0–100 score per property type × age band × local authority
+- [x] **Dashboard**: Single-file interactive analytics dashboard deployed via GitHub Pages
+- [x] **Documentation**: Learning masterclass and dbt visual lineage
+- [ ] **Phase 4**: Advanced energy prediction modeling and carbon-neutral scenario simulations
+- [ ] **Deployment**: Full BI dashboard (Streamlit/Next.js) with live filtering
 
 ---
 
-## 🛡️ License
+## Reference Documents
+
+- **[DBT_WORKFLOW.md](./DBT_WORKFLOW.md)** — Deep dive into dbt concepts, the Medallion Architecture, normalization patterns, and step-by-step workflow explanation for engineers of all backgrounds.
+
+---
+
+## License
+
 Distributed under the MIT License. See `LICENSE` for more information.

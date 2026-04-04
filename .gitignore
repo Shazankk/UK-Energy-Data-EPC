@@ -26,6 +26,13 @@ logs/
 all-domestic-certificates/
 output.csv
 
-# Reports
-reports/
-!reports/README.md
+# Reports — track only the live dashboard; ignore intermediate chart files
+reports/*.png
+reports/co2_*.html
+reports/county_*.html
+reports/efficiency_*.html
+reports/local_*.html
+reports/postcode_*.html
+reports/rating_*.html
+reports/retrofit_priority_matrix.html
+reports/top_*.png
