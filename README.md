@@ -21,6 +21,40 @@ The UK Government publishes all EPC records as open data. The full domestic data
 
 ---
 
+## Key Terminology
+
+A plain-English reference for every specialised term used in this project. No technical background required.
+
+### Energy & Property Terms
+
+| Term | What it means |
+|---|---|
+| **SAP Score** | **Standard Assessment Procedure.** A number from 1 (very inefficient) to 100 (very efficient) that measures how energy-efficient a property is — think of it like a fuel-economy rating for a building. The UK average sits around 60. A score of 69+ qualifies as Band C; below 21 is Band G. |
+| **EPC Band (A–G)** | The letter grade derived from the SAP score. **A** (92+) is the most efficient; **G** (1–20) is the least. Most UK homes are rated **D** (55–68). The government's 2035 target requires all homes to reach at least **Band C** (69+). |
+| **CO₂ (Carbon Dioxide)** | The primary greenhouse gas released when burning fossil fuels for heat. Each EPC certificate records a property's estimated annual CO₂ output in **tonnes per year**. Reducing these figures is the core goal of the UK's Net Zero policy. |
+| **Net Zero** | The UK government's legally binding commitment to reduce national greenhouse gas emissions to zero (or offset any remainder) by **2050**. Buildings account for roughly 20% of total UK emissions, making EPC improvement central to this target. |
+| **UPRN** | **Unique Property Reference Number.** A permanent, government-assigned identifier for every addressable location in Great Britain — think of it as a National Insurance number, but for buildings. UPRNs let us track the same property across multiple EPC inspections over many years. |
+| **LAD** | **Local Authority District.** The administrative tier below county level — roughly equivalent to a borough or district council. England and Wales have **362 LADs**. The geographic map colours each LAD by its average SAP score. |
+| **Fuel Type** | The primary energy source used to heat a property. Common UK types: **Mains Gas** (piped natural gas — most common), **Electricity**, **Heating Oil** (delivered by tanker — typical in rural areas), **LPG** (bottled gas), **Solid Fuel** (coal, anthracite), and **Biomass** (wood pellets or chips). |
+| **LPG** | **Liquefied Petroleum Gas.** A bottled or tanked gas used in rural properties with no mains gas connection. Typically more expensive per unit of heat than mains gas, which is why LPG-heated homes tend to score lower on EPC ratings. |
+| **Efficiency Gap** | The difference between a property's *current* SAP score and its *potential* SAP score if all recommended upgrades (insulation, heating systems, etc.) were installed. A gap of 30+ points means major improvement is achievable. |
+| **Retrofit** | Upgrading an existing building's energy efficiency — e.g., adding wall or loft insulation, replacing a gas boiler with a heat pump, or installing double glazing. As opposed to building a new efficient home from scratch. |
+
+### Statistics & Chart Terms
+
+| Term | What it means |
+|---|---|
+| **Median** | The *middle* value when all data points are sorted from lowest to highest. Unlike a mean (average), the median is not dragged up or down by extreme outliers. If 29 million properties are ranked by SAP score, the median is the property exactly in the middle. |
+| **Q1 (First Quartile)** | Sort all values lowest to highest, then divide them into four equal groups. Q1 is the boundary between the 1st and 2nd group — the **25th percentile**. In plain terms: a property at Q1 is more efficient than only 25% of properties. |
+| **Q3 (Third Quartile)** | The boundary between the 3rd and 4th group — the **75th percentile**. A property at Q3 is more efficient than 75% of all properties. |
+| **IQR (Interquartile Range)** | The span between Q1 and Q3 — the range that contains the middle 50% of the data. Box plots use the IQR to show where most values cluster, ignoring extreme high and low outliers. |
+| **Box Plot** | A chart that summarises a distribution using five numbers: minimum, Q1, median, Q3, and maximum. The box covers Q1–Q3 (the middle 50%); the line inside is the median; the "whiskers" extend to the min and max (excluding outliers shown as dots). Ideal for comparing distributions across many groups without overplotting millions of individual points. |
+| **2D Density Contour** | A chart for very large datasets where plotting every point would produce an unreadable mass of ink. Instead, the data is divided into a grid and contour lines are drawn where points are densest — like a topographic map, but for data concentration. |
+| **Percentile** | A position in a sorted dataset expressed as a percentage. The 90th percentile means "better than 90% of all values." The median is the 50th percentile. |
+| **Normalisation** | Rescaling values from different scales onto a common 0–1 range so they can be fairly combined. Used in the Retrofit Priority Score to combine SAP inefficiency, efficiency gap, and CO₂ saving (all measured differently) into one comparable number. |
+
+---
+
 ## The Core Challenge
 
 The raw data is delivered as hundreds of CSV files — a single flat table with 100+ columns, containing duplicate entries because the same property gets re-inspected every time it is sold. Analyzing this at scale requires:

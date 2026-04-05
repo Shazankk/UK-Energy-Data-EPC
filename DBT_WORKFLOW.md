@@ -692,3 +692,20 @@ dbt clean
 | **Apache Arrow** | Zero-copy in-memory columnar format shared between DuckDB and Polars | `.pl()` in `eda_uk_energy.py` |
 | **Columnar Storage** | Data stored column-by-column (fast for aggregations) | DuckDB's internal storage format |
 | **Vectorized Execution** | Operations applied to batches of values using CPU SIMD | DuckDB's query engine |
+
+---
+
+## EPC Domain Terms
+
+Quick reference for energy and property terms used across this project's models and dashboards. See `README.md → Key Terminology` for the full plain-English glossary.
+
+| Term | Meaning | Where it appears |
+|---|---|---|
+| **SAP Score** | Standard Assessment Procedure — energy efficiency score 1–100 | `energy_efficiency_current`, `energy_efficiency_potential` columns |
+| **EPC Band (A–G)** | Letter grade derived from SAP score; Band C (SAP 69+) is the 2035 government target | `energy_rating_current`, `energy_rating_potential` |
+| **UPRN** | Unique Property Reference Number — permanent government building ID | Primary natural key; deduplication key in `dim_properties` |
+| **LAD** | Local Authority District — one of 362 administrative areas in England & Wales | `local_authority` column; geography level in `v_regional_energy_performance` |
+| **Efficiency Gap** | `energy_efficiency_potential − energy_efficiency_current` — SAP points recoverable via retrofits | Computed in `fct_property_energy_performance`; filters in `v_property_efficiency_gaps` |
+| **CO₂ (tonnes/yr)** | Estimated annual carbon dioxide emissions for the property | `co2_emissions_current_tonnes_per_year`, `co2_emissions_potential_tonnes_per_year` |
+| **Retrofit Priority Score** | Composite 0–100 score = 35% inefficiency + 40% efficiency gap + 25% CO₂ saving, all normalised | `v_retrofit_priority` |
+| **Median / Q1 / Q3 / IQR** | Statistical summary of distributions used in box-plot charts (see README Glossary for definitions) | Dashboard sections 4, 5 |
